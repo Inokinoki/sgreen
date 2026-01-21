@@ -32,4 +32,3 @@ func getPtsPathViaIoctl(ptyFile *os.File) (string, error) {
 
 	return "", os.ErrNotExist
 }
-

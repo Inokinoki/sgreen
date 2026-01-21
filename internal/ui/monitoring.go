@@ -9,45 +9,45 @@ import (
 
 // ActivityMonitor monitors activity in windows
 type ActivityMonitor struct {
-	mu              sync.RWMutex
-	enabled         bool
-	message         string
-	lastActivity    map[int]time.Time
+	mu               sync.RWMutex
+	enabled          bool
+	message          string
+	lastActivity     map[int]time.Time
 	monitoredWindows map[int]bool
-	activityChan    chan int
+	activityChan     chan int
 }
 
 // SilenceMonitor monitors silence in windows
 type SilenceMonitor struct {
-	mu              sync.RWMutex
-	enabled         bool
-	message         string
-	lastActivity    map[int]time.Time
+	mu               sync.RWMutex
+	enabled          bool
+	message          string
+	lastActivity     map[int]time.Time
 	monitoredWindows map[int]bool
-	silenceTimeout  time.Duration
-	silenceChan     chan int
+	silenceTimeout   time.Duration
+	silenceChan      chan int
 }
 
 // NewActivityMonitor creates a new activity monitor
 func NewActivityMonitor(message string) *ActivityMonitor {
 	return &ActivityMonitor{
-		enabled:         false,
-		message:         message,
-		lastActivity:    make(map[int]time.Time),
+		enabled:          false,
+		message:          message,
+		lastActivity:     make(map[int]time.Time),
 		monitoredWindows: make(map[int]bool),
-		activityChan:    make(chan int, 10),
+		activityChan:     make(chan int, 10),
 	}
 }
 
 // NewSilenceMonitor creates a new silence monitor
 func NewSilenceMonitor(message string, timeout time.Duration) *SilenceMonitor {
 	return &SilenceMonitor{
-		enabled:         false,
-		message:         message,
-		lastActivity:    make(map[int]time.Time),
+		enabled:          false,
+		message:          message,
+		lastActivity:     make(map[int]time.Time),
 		monitoredWindows: make(map[int]bool),
-		silenceTimeout:  timeout,
-		silenceChan:     make(chan int, 10),
+		silenceTimeout:   timeout,
+		silenceChan:      make(chan int, 10),
 	}
 }
 
@@ -85,19 +85,19 @@ func (am *ActivityMonitor) UnmonitorWindow(windowID int) {
 func (am *ActivityMonitor) RecordActivity(windowID int) {
 	am.mu.Lock()
 	defer am.mu.Unlock()
-	
+
 	if !am.enabled {
 		return
 	}
-	
+
 	if !am.monitoredWindows[windowID] {
 		return
 	}
-	
+
 	// Check if this is activity in a background window
 	// (not the current window)
 	am.lastActivity[windowID] = time.Now()
-	
+
 	// Send notification if window is monitored
 	select {
 	case am.activityChan <- windowID:
@@ -163,29 +163,29 @@ func (sm *SilenceMonitor) StartMonitoring(currentWindowID func() int) {
 	go func() {
 		ticker := time.NewTicker(1 * time.Second)
 		defer ticker.Stop()
-		
+
 		for range ticker.C {
 			sm.mu.RLock()
 			if !sm.enabled {
 				sm.mu.RUnlock()
 				continue
 			}
-			
+
 			currentWin := currentWindowID()
 			now := time.Now()
-			
+
 			for winID := range sm.monitoredWindows {
 				if winID == currentWin {
 					// Don't monitor current window
 					continue
 				}
-				
+
 				lastAct, exists := sm.lastActivity[winID]
 				if !exists {
 					sm.lastActivity[winID] = now
 					continue
 				}
-				
+
 				if now.Sub(lastAct) > sm.silenceTimeout {
 					// Window has been silent
 					select {
@@ -251,4 +251,3 @@ func FormatMessage(template string, win *session.Window) string {
 	}
 	return result
 }
-

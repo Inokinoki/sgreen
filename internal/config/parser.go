@@ -10,22 +10,22 @@ import (
 
 // Config represents parsed screen configuration
 type Config struct {
-	Escape          string
-	Shell           string
-	Scrollback      int
-	Logfile         string
-	Logging         bool
-	FlowControl     string
-	Interrupt       bool
-	StartupMessage  bool
-	Bell            bool
-	VBell           bool
-	Activity        string
-	Silence         string
-	Hardstatus      string
-	Caption         string
-	ShellTitle      string
-	Bindings        map[string]string
+	Escape         string
+	Shell          string
+	Scrollback     int
+	Logfile        string
+	Logging        bool
+	FlowControl    string
+	Interrupt      bool
+	StartupMessage bool
+	Bell           bool
+	VBell          bool
+	Activity       string
+	Silence        string
+	Hardstatus     string
+	Caption        string
+	ShellTitle     string
+	Bindings       map[string]string
 }
 
 // DefaultConfig returns a default configuration
@@ -106,7 +106,7 @@ func ParseConfigFile(filename string) (*Config, error) {
 func parseConfigLines(lines []string, config *Config, baseDir string, processedFiles map[string]bool) (*Config, error) {
 	for i, line := range lines {
 		line = strings.TrimSpace(line)
-		
+
 		// Skip comments and empty lines
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
@@ -141,7 +141,7 @@ func parseConfigLines(lines []string, config *Config, baseDir string, processedF
 				if !filepath.IsAbs(sourceFile) {
 					sourceFile = filepath.Join(baseDir, sourceFile)
 				}
-				
+
 				// Avoid cycles
 				if processedFiles[sourceFile] {
 					continue
@@ -276,4 +276,3 @@ func (c *Config) ApplyToMainConfig(mainConfig interface{}) {
 	// This will be called from main.go to apply settings
 	// The mainConfig should be a pointer to the main Config struct
 }
-

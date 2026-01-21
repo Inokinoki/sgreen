@@ -255,7 +255,7 @@ func handleWipe() {
 				if win.PtsPath != "" {
 					if err := sess.ReconnectPTY(); err == nil {
 						allWindowsDead = false
-			break
+						break
 					}
 				}
 			}
@@ -580,7 +580,7 @@ func handlePowerDetach(sessionName string, cmdArgs []string, config *Config) {
 
 	if sessionName != "" {
 		sess, err = session.Load(sessionName)
-	if err != nil {
+		if err != nil {
 			// Session not found, create new one if command provided
 			if len(cmdArgs) > 0 {
 				handleNew(sessionName, cmdArgs, config)
@@ -670,8 +670,8 @@ func attachToSession(sess *session.Session, config *Config) {
 			}
 		} else {
 			fmt.Fprintf(os.Stderr, "Error: session %s has no active PTY process\n", sess.ID)
-		fmt.Fprintf(os.Stderr, "The session may have been created in a different process\n")
-		os.Exit(1)
+			fmt.Fprintf(os.Stderr, "The session may have been created in a different process\n")
+			os.Exit(1)
 		}
 	}
 

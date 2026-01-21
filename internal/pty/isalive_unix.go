@@ -14,9 +14,8 @@ func (p *PTYProcess) IsAlive() bool {
 		// In this case, assume it's alive if we can access the PTY
 		return p.Pty != nil
 	}
-	
+
 	// Check if process is alive by sending signal 0 (doesn't actually send a signal)
 	err := p.Cmd.Process.Signal(syscall.Signal(0))
 	return err == nil
 }
-

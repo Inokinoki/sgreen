@@ -15,4 +15,3 @@ func Reconnect(ptsPath string) (*PTYProcess, error) {
 	// Return an error indicating this is not supported
 	return nil, fmt.Errorf("PTY reconnection is not supported on Windows: %w", os.ErrNotExist)
 }
-

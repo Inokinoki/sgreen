@@ -14,17 +14,17 @@ import (
 
 // StatusLine displays a status line at the bottom of the terminal
 type StatusLine struct {
-	enabled   bool
-	format    string
-	lastUpdate time.Time
+	enabled      bool
+	format       string
+	lastUpdate   time.Time
 	lastRendered string
 }
 
 // NewStatusLine creates a new status line
 func NewStatusLine(enabled bool, format string) *StatusLine {
 	return &StatusLine{
-		enabled:   enabled,
-		format:    format,
+		enabled:    enabled,
+		format:     format,
 		lastUpdate: time.Now(),
 	}
 }
@@ -57,7 +57,7 @@ func (sl *StatusLine) Update(out *os.File, sess *session.Session) {
 	MoveCursor(out, getTerminalHeight(out), 1)
 	ClearLine(out)
 	fmt.Fprint(out, status)
-	
+
 	sl.lastUpdate = time.Now()
 	sl.lastRendered = status
 }
@@ -146,7 +146,7 @@ func getLoadAverage() string {
 	if runtime.GOOS == "windows" {
 		return "N/A"
 	}
-	
+
 	// Try to read from /proc/loadavg on Linux
 	if loadavg, err := os.ReadFile("/proc/loadavg"); err == nil {
 		loadStr := strings.TrimSpace(string(loadavg))
@@ -157,7 +157,7 @@ func getLoadAverage() string {
 		}
 		return loadStr
 	}
-	
+
 	// On other Unix systems, we could use syscall.Getloadavg if available
 	// For now, return a placeholder
 	return "N/A"
@@ -196,7 +196,7 @@ func ShowInteractiveWindowList(in, out *os.File, sess *session.Session) error {
 		fmt.Fprintf(out, "%s %s: %s\r\n", marker, win.Number, title)
 	}
 	fmt.Fprint(out, "\r\nSelect window (number/name/Enter to cancel): ")
-	
+
 	// Read input
 	buf := make([]byte, 1)
 	var input []byte
@@ -205,9 +205,9 @@ func ShowInteractiveWindowList(in, out *os.File, sess *session.Session) error {
 		if err != nil || n == 0 {
 			return nil
 		}
-		
+
 		b := buf[0]
-		
+
 		// Handle Enter/Return
 		if b == '\n' || b == '\r' {
 			if len(input) == 0 {
@@ -217,13 +217,13 @@ func ShowInteractiveWindowList(in, out *os.File, sess *session.Session) error {
 			}
 			break
 		}
-		
+
 		// Handle Escape
 		if b == 0x1b { // ESC
 			fmt.Fprint(out, "\r\n")
 			return nil
 		}
-		
+
 		// Handle backspace
 		if b == '\b' || b == 0x7f {
 			if len(input) > 0 {
@@ -232,20 +232,20 @@ func ShowInteractiveWindowList(in, out *os.File, sess *session.Session) error {
 			}
 			continue
 		}
-		
+
 		// Handle printable characters
 		if b >= 32 && b < 127 {
 			input = append(input, b)
 			fmt.Fprint(out, string(b))
 		}
 	}
-	
+
 	// Parse input
 	selection := strings.TrimSpace(string(input))
 	if selection == "" {
 		return nil
 	}
-	
+
 	// Try to switch to selected window
 	err := sess.SwitchToWindow(selection)
 	if err != nil {
@@ -254,8 +254,7 @@ func ShowInteractiveWindowList(in, out *os.File, sess *session.Session) error {
 		time.Sleep(1 * time.Second)
 		return nil
 	}
-	
+
 	fmt.Fprint(out, "\r\n")
 	return nil
 }
-

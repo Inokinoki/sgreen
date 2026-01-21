@@ -13,4 +13,3 @@ func getPtsPathViaIoctl(ptyFile *os.File) (string, error) {
 	// Return empty string to indicate not available
 	return "", os.ErrNotExist
 }
-

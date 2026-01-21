@@ -12,19 +12,19 @@ import (
 
 // CopyMode represents the copy mode state
 type CopyMode struct {
-	buffer      *ScrollbackBuffer
-	startLine   int
-	startCol    int
-	endLine     int
-	endCol      int
-	currentLine int
-	currentCol  int
-	selecting   bool
-	selected    bool
-	searchMode  bool
-	searchTerm  string
+	buffer        *ScrollbackBuffer
+	startLine     int
+	startCol      int
+	endLine       int
+	endCol        int
+	currentLine   int
+	currentCol    int
+	selecting     bool
+	selected      bool
+	searchMode    bool
+	searchTerm    string
 	searchResults []int // Line numbers matching search
-	searchIndex int    // Current search result index
+	searchIndex   int   // Current search result index
 }
 
 // PasteBuffer holds the paste buffer content
@@ -69,19 +69,19 @@ func EnterCopyMode(win *session.Window, termFile *os.File, scrollback *Scrollbac
 
 	// Initialize copy mode
 	cm := &CopyMode{
-		buffer:     scrollback,
-		startLine:  scrollback.Size() - 1,
-		startCol:   0,
-		endLine:    scrollback.Size() - 1,
-		endCol:     0,
-		currentLine: scrollback.Size() - 1,
-		currentCol: 0,
-		selecting:  false,
-		selected:   false,
-		searchMode: false,
-		searchTerm: "",
+		buffer:        scrollback,
+		startLine:     scrollback.Size() - 1,
+		startCol:      0,
+		endLine:       scrollback.Size() - 1,
+		endCol:        0,
+		currentLine:   scrollback.Size() - 1,
+		currentCol:    0,
+		selecting:     false,
+		selected:      false,
+		searchMode:    false,
+		searchTerm:    "",
 		searchResults: make([]int, 0),
-		searchIndex: 0,
+		searchIndex:   0,
 	}
 
 	// Enter copy mode loop
@@ -95,7 +95,7 @@ func (cm *CopyMode) run(termFile *os.File) error {
 
 	buf := make([]byte, 1)
 	searchInput := make([]byte, 0, 256)
-	
+
 	for {
 		n, err := termFile.Read(buf)
 		if err != nil || n == 0 {
@@ -103,7 +103,7 @@ func (cm *CopyMode) run(termFile *os.File) error {
 		}
 
 		key := buf[0]
-		
+
 		// Handle search mode
 		if cm.searchMode {
 			if key == '\r' || key == '\n' {
@@ -331,11 +331,11 @@ func (cm *CopyMode) copySelection() {
 func (cm *CopyMode) executeSearch(term string) {
 	cm.searchTerm = term
 	cm.searchResults = make([]int, 0)
-	
+
 	if term == "" {
 		return
 	}
-	
+
 	// Search through all lines in scrollback
 	for i := 0; i < cm.buffer.Size(); i++ {
 		line := cm.buffer.GetLine(i)
@@ -357,7 +357,7 @@ func (cm *CopyMode) executeSearch(term string) {
 					termLower += string(r)
 				}
 			}
-			
+
 			// Check if line contains search term
 			for j := 0; j <= len(lineLower)-len(termLower); j++ {
 				if lineLower[j:j+len(termLower)] == termLower {
@@ -367,7 +367,7 @@ func (cm *CopyMode) executeSearch(term string) {
 			}
 		}
 	}
-	
+
 	// Move to first result if any found
 	if len(cm.searchResults) > 0 {
 		cm.searchIndex = 0
@@ -387,7 +387,7 @@ func (cm *CopyMode) updateDisplay(termFile *os.File) {
 		lineStr += "_"
 	}
 
-	status := fmt.Sprintf("\r[Line %d/%d, Col %d] %s", 
+	status := fmt.Sprintf("\r[Line %d/%d, Col %d] %s",
 		cm.currentLine+1, cm.buffer.Size(), cm.currentCol+1, lineStr)
 	if len(status) > 80 {
 		status = status[:77] + "..."
@@ -422,4 +422,3 @@ func WriteScrollbackToFile(scrollback *ScrollbackBuffer, filename string) error 
 	_, err = scrollback.WriteTo(file)
 	return err
 }
-

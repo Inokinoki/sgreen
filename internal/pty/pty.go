@@ -25,13 +25,13 @@ func Start(cmdPath string, args []string) (*PTYProcess, error) {
 // StartWithEnv creates a new PTY process with custom environment variables
 func StartWithEnv(cmdPath string, args []string, envOverrides map[string]string) (*PTYProcess, error) {
 	cmd := exec.Command(cmdPath, args...)
-	
+
 	// Set process group management (Unix only)
 	setProcessGroup(cmd)
-	
+
 	// Start with current environment
 	cmd.Env = os.Environ()
-	
+
 	// Apply environment overrides
 	if envOverrides != nil {
 		envMap := make(map[string]string)
@@ -75,12 +75,12 @@ func StartWithEnv(cmdPath string, args []string, envOverrides map[string]string)
 // getPtsPath gets the path to the PTY slave device
 func getPtsPath(ptyFile *os.File) (string, error) {
 	name := ptyFile.Name()
-	
+
 	// If the name already looks like a pts path, use it
 	if filepath.Dir(name) == "/dev/pts" {
 		return name, nil
 	}
-	
+
 	// Try to read the symlink from /proc/self/fd (Linux)
 	if fdPath := filepath.Join("/proc/self/fd", filepath.Base(name)); fdPath != "" {
 		if linkPath, err := os.Readlink(fdPath); err == nil {
@@ -89,17 +89,16 @@ func getPtsPath(ptyFile *os.File) (string, error) {
 			}
 		}
 	}
-	
+
 	// Try using TIOCGPTN ioctl on Unix systems (Linux, BSD)
 	ptsPath, err := getPtsPathViaIoctl(ptyFile)
 	if err == nil && ptsPath != "" {
 		return ptsPath, nil
 	}
-	
+
 	// Last resort: return empty string (non-fatal)
 	return "", os.ErrNotExist
 }
-
 
 // Pipe connects the client's input/output to the PTY
 // It copies data bidirectionally between client and PTY
@@ -148,5 +147,3 @@ func (p *PTYProcess) Kill() error {
 	}
 	return nil
 }
-
-

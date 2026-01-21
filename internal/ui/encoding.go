@@ -83,4 +83,3 @@ func getCharmap(encoding string) *charmap.Charmap {
 		return nil
 	}
 }
-

@@ -10,7 +10,7 @@ func (p *PTYProcess) IsAlive() bool {
 		// In this case, assume it's alive if we can access the PTY
 		return p.Pty != nil
 	}
-	
+
 	// On Windows, we check if the process is still running by
 	// checking if we can access the process handle
 	// If the process has exited, accessing it may fail
@@ -19,4 +19,3 @@ func (p *PTYProcess) IsAlive() bool {
 	// for basic compatibility
 	return true
 }
-

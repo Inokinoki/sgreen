@@ -19,4 +19,3 @@ func setProcessGroup(cmd *exec.Cmd) {
 	// Set process group ID to 0 (creates new group)
 	cmd.SysProcAttr.Pgid = 0
 }
-

@@ -71,7 +71,7 @@ func ShowLicense(out *os.File) {
 func ShowTimeLoad(out *os.File) {
 	now := time.Now()
 	message := fmt.Sprintf("\r\nTime: %s\r\n", now.Format("2006-01-02 15:04:05"))
-	
+
 	// Try to get load average (Unix only)
 	if runtime.GOOS != "windows" {
 		// Read from /proc/loadavg on Linux, or use syscall on other Unix
@@ -80,7 +80,7 @@ func ShowTimeLoad(out *os.File) {
 			message += fmt.Sprintf("Load: %s\r\n", loadStr)
 		}
 	}
-	
+
 	message += "\r\nPress any key to continue...\r\n"
 	fmt.Fprint(out, message)
 }
@@ -90,4 +90,3 @@ func BlankScreen(out *os.File) {
 	// Clear screen and move cursor to top
 	fmt.Fprint(out, "\033[2J\033[H")
 }
-

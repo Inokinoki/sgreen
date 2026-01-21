@@ -153,4 +153,3 @@ func (sb *ScrollbackBuffer) WriteTo(w io.Writer) (int64, error) {
 	}
 	return total, nil
 }
-

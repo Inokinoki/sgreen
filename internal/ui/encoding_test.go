@@ -4,8 +4,8 @@ import "testing"
 
 func TestNormalizeEncoding(t *testing.T) {
 	cases := map[string]string{
-		"utf-8": "UTF-8",
-		"UTF8":  "UTF8",
+		"utf-8":        "UTF-8",
+		"UTF8":         "UTF8",
 		" iso_8859-1 ": "ISO-8859-1",
 	}
 	for input, want := range cases {
@@ -22,4 +22,3 @@ func TestConvertToUTF8ISO88591(t *testing.T) {
 		t.Fatalf("convertToUTF8 should expand non-ASCII bytes")
 	}
 }
-

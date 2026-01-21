@@ -10,4 +10,3 @@ func setProcessGroup(cmd *exec.Cmd) {
 	// Windows doesn't have process groups in the same way
 	// No-op
 }
-

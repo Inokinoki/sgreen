@@ -11,12 +11,12 @@ import (
 
 // LogWriter wraps a file with timestamping and rotation support
 type LogWriter struct {
-	file       *os.File
-	mu         sync.Mutex
-	basePath   string
-	maxSize    int64
+	file        *os.File
+	mu          sync.Mutex
+	basePath    string
+	maxSize     int64
 	currentSize int64
-	timestamp  bool
+	timestamp   bool
 }
 
 // NewLogWriter creates a new log writer with optional timestamping
@@ -107,9 +107,9 @@ func (lw *LogWriter) SetMaxSize(size int64) {
 
 // PerWindowLogWriter manages per-window logging
 type PerWindowLogWriter struct {
-	writers map[int]*LogWriter
-	mu      sync.RWMutex
-	baseDir string
+	writers   map[int]*LogWriter
+	mu        sync.RWMutex
+	baseDir   string
 	timestamp bool
 }
 
@@ -180,4 +180,3 @@ func sanitizeFilename(s string) string {
 	}
 	return string(result)
 }
-

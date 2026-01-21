@@ -7,13 +7,13 @@ import (
 
 // TerminalCapabilities represents detected terminal features.
 type TerminalCapabilities struct {
-	HasColor         bool
-	Supports256Color bool
-	SupportsTrueColor bool
-	SupportsMouse    bool
+	HasColor               bool
+	Supports256Color       bool
+	SupportsTrueColor      bool
+	SupportsMouse          bool
 	SupportsBracketedPaste bool
-	SupportsCursor   bool
-	SupportsAltScreen bool
+	SupportsCursor         bool
+	SupportsAltScreen      bool
 }
 
 // DetectTerminalCapabilities determines capabilities using TERM/COLORTERM.
@@ -47,4 +47,3 @@ func DetectTerminalCapabilities() TerminalCapabilities {
 
 	return caps
 }
-

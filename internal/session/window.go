@@ -10,16 +10,16 @@ import (
 
 // Window represents a window within a session
 type Window struct {
-	ID        int       `json:"id"`        // Window number (0-9, then 10-35 for A-Z)
-	Number    string    `json:"number"`    // Display number (0-9, A-Z)
-	Title     string    `json:"title"`    // Window title
-	CmdPath   string    `json:"cmd_path"` // Command path
-	CmdArgs   []string  `json:"cmd_args"` // Command arguments
-	Pid       int       `json:"pid"`       // Process ID
-	PtsPath   string    `json:"pts_path,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
-	ScrollbackSize int  `json:"scrollback_size,omitempty"` // Scrollback buffer size
-	Encoding       string `json:"encoding,omitempty"` // Window encoding (e.g., UTF-8, ISO-8859-1)
+	ID             int       `json:"id"`       // Window number (0-9, then 10-35 for A-Z)
+	Number         string    `json:"number"`   // Display number (0-9, A-Z)
+	Title          string    `json:"title"`    // Window title
+	CmdPath        string    `json:"cmd_path"` // Command path
+	CmdArgs        []string  `json:"cmd_args"` // Command arguments
+	Pid            int       `json:"pid"`      // Process ID
+	PtsPath        string    `json:"pts_path,omitempty"`
+	CreatedAt      time.Time `json:"created_at"`
+	ScrollbackSize int       `json:"scrollback_size,omitempty"` // Scrollback buffer size
+	Encoding       string    `json:"encoding,omitempty"`        // Window encoding (e.g., UTF-8, ISO-8859-1)
 
 	// Runtime fields (not persisted)
 	PTYProcess *pty.PTYProcess `json:"-"`
@@ -77,7 +77,7 @@ func windowStringToNumber(s string) (int, error) {
 	if len(s) == 0 {
 		return -1, fmt.Errorf("empty window number")
 	}
-	
+
 	// Single character
 	if len(s) == 1 {
 		c := s[0]
@@ -91,14 +91,13 @@ func windowStringToNumber(s string) (int, error) {
 			return int(c-'a') + 10, nil
 		}
 	}
-	
+
 	// Try to parse as integer
 	var id int
 	_, err := fmt.Sscanf(s, "%d", &id)
 	if err == nil && id >= 0 && id <= 35 {
 		return id, nil
 	}
-	
+
 	return -1, fmt.Errorf("invalid window number: %s", s)
 }
-

@@ -4,8 +4,8 @@ import "testing"
 
 func TestWindowNumberConversion(t *testing.T) {
 	cases := []struct {
-		id   int
-		str  string
+		id  int
+		str string
 	}{
 		{0, "0"},
 		{9, "9"},
@@ -40,4 +40,3 @@ func TestDetectEncodingFromLocale(t *testing.T) {
 		t.Fatalf("detectEncodingFromLocale() = %s, want UTF-8", got)
 	}
 }
-

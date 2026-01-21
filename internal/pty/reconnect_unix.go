@@ -20,4 +20,3 @@ func Reconnect(ptsPath string) (*PTYProcess, error) {
 		PtsPath: ptsPath,
 	}, nil
 }
-
