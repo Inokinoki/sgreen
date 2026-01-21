@@ -9,10 +9,14 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"sync"
+	"time"
 
 	"golang.org/x/sys/unix"
 	"golang.org/x/term"
 
+	"github.com/inoki/sgreen/internal/pty"
 	"github.com/inoki/sgreen/internal/session"
 )
 
@@ -39,10 +43,30 @@ func Attach(in *os.File, out *os.File, errOut *os.File, sess *session.Session) e
 
 // AttachWithConfig attaches the current terminal to a session with configuration
 func AttachWithConfig(in *os.File, out *os.File, errOut *os.File, sess *session.Session, config *AttachConfig) error {
-	// Get PTY process
-	ptyProc := sess.GetPTYProcess()
+	// In multiuser mode, allow attaching even if PTY is not directly available
+	// Try to get PTY from current window instead
+	var ptyProc *pty.PTYProcess
+	if config.Multiuser {
+		// Multiuser mode: try to get PTY from current window
+		if win := sess.GetCurrentWindow(); win != nil {
+			ptyProc = win.GetPTYProcess()
+		}
+	}
+	
+	// Fallback to session PTY
+	if ptyProc == nil {
+		ptyProc = sess.GetPTYProcess()
+	}
+	
 	if ptyProc == nil {
 		return errors.New("PTY process not available")
+	}
+
+	// Show startup message if enabled
+	if config.StartupMessage {
+		ShowStartupMessage(out, sess.ID, len(sess.Windows))
+		// Wait a bit for user to see the message
+		time.Sleep(1 * time.Second)
 	}
 
 	// Save original terminal state
@@ -63,8 +87,71 @@ func attachLoop(in *os.File, out *os.File, errOut *os.File, sess *session.Sessio
 	signal.Notify(sigChan, unix.SIGWINCH)
 	defer signal.Stop(sigChan)
 
+	// Handle SIGHUP for autodetach on hangup
+	hupChan := make(chan os.Signal, 1)
+	signal.Notify(hupChan, unix.SIGHUP)
+	defer signal.Stop(hupChan)
+
 	// Create scrollback buffers for windows (stored in a map)
 	scrollbackBuffers := make(map[int]*ScrollbackBuffer)
+
+	// Create activity and silence monitors
+	activityMonitor := NewActivityMonitor(config.ActivityMsg)
+	silenceMonitor := NewSilenceMonitor(config.SilenceMsg, time.Duration(config.SilenceTimeout)*time.Second)
+	
+	// Enable monitoring if configured
+	if config.ActivityMsg != "" {
+		activityMonitor.Enable()
+	}
+	if config.SilenceMsg != "" && config.SilenceTimeout > 0 {
+		silenceMonitor.Enable()
+		silenceMonitor.StartMonitoring(func() int {
+			if win := sess.GetCurrentWindow(); win != nil {
+				return win.ID
+			}
+			return -1
+		})
+	}
+
+	// Monitor activity and silence notifications
+	go func() {
+		for {
+			select {
+			case winID := <-activityMonitor.GetActivityChannel():
+				// Find window by ID
+				var win *session.Window
+				for _, w := range sess.Windows {
+					if w.ID == winID {
+						win = w
+						break
+					}
+				}
+				if win != nil {
+					msg := FormatMessage(activityMonitor.GetMessage(), win)
+					ShowActivityMessage(out, msg)
+					// Show bell if configured
+					if config.Bell {
+						ShowBell(out, false)
+					} else if config.VBell {
+						ShowBell(out, true)
+					}
+				}
+			case winID := <-silenceMonitor.GetSilenceChannel():
+				// Find window by ID
+				var win *session.Window
+				for _, w := range sess.Windows {
+					if w.ID == winID {
+						win = w
+						break
+					}
+				}
+				if win != nil {
+					msg := FormatMessage(silenceMonitor.GetMessage(), win)
+					ShowSilenceMessage(out, msg)
+				}
+			}
+		}
+	}()
 
 	for {
 		// Get current window
@@ -92,7 +179,19 @@ func attachLoop(in *os.File, out *os.File, errOut *os.File, sess *session.Sessio
 		}
 
 		// Create output writer (with logging if enabled)
-		outputWriter := createOutputWriter(out, config)
+		// Determine log directory for per-window logging
+		logDir := ""
+		if config.Logging && config.Logfile != "" {
+			logDir = filepath.Dir(config.Logfile)
+		} else if config.Logging {
+			// Default log directory
+			homeDir, _ := os.UserHomeDir()
+			if homeDir != "" {
+				logDir = filepath.Join(homeDir, ".sgreen", "logs")
+				os.MkdirAll(logDir, 0755)
+			}
+		}
+		outputWriter := createOutputWriterForWindow(out, config, win, logDir)
 
 		// Wrap output writer to also write to scrollback
 		scrollbackWriter := io.MultiWriter(outputWriter, &scrollbackWriter{scrollback: scrollback})
@@ -108,11 +207,11 @@ func attachLoop(in *os.File, out *os.File, errOut *os.File, sess *session.Sessio
 		// Set window size
 		if err := setWindowSizeForWindow(in, win, config.AdaptSize); err != nil {
 			// Non-fatal
-		}
+	}
 
-		// Monitor window size changes
-		go func() {
-			for range sigChan {
+	// Monitor window size changes
+	go func() {
+		for range sigChan {
 				if win := sess.GetCurrentWindow(); win != nil {
 					setWindowSizeForWindow(in, win, config.AdaptSize)
 				}
@@ -130,19 +229,23 @@ func attachLoop(in *os.File, out *os.File, errOut *os.File, sess *session.Sessio
 
 		// Copy from input to PTY, with detach detection and window commands
 		inputDone := make(chan error, 1)
-		go func() {
+	go func() {
 			_, err := io.Copy(ptyProc.Pty, detachReader)
 			inputDone <- err
-		}()
+	}()
 
-		// Wait for either input or output to finish
+		// Wait for either input, output, or signals to finish
 		select {
-		case err := <-inputDone:
-			if err == ErrDetach {
-				// User detached, this is normal
-				return nil
-			}
+		case <-hupChan:
+			// SIGHUP received - autodetach
+			return ErrDetach
 			
+		case err := <-inputDone:
+	if err == ErrDetach {
+		// User detached, this is normal
+		return nil
+	}
+
 			// Check if it's a window command
 			var winCmd *ErrWindowCommand
 			if errors.As(err, &winCmd) {
@@ -151,6 +254,11 @@ func attachLoop(in *os.File, out *os.File, errOut *os.File, sess *session.Sessio
 				if handleErr := handleWindowCommand(sess, winCmd, config, in, out, currentScrollback); handleErr != nil {
 					// If command handling fails, return error
 					return handleErr
+				}
+				// Update status line after command
+				if config.StatusLine {
+					statusLine := NewStatusLine(true, config.StatusFormat)
+					statusLine.Update(out, sess)
 				}
 				// Window switched, restart the loop
 				continue
@@ -165,7 +273,7 @@ func attachLoop(in *os.File, out *os.File, errOut *os.File, sess *session.Sessio
 				// PTY closed, try to continue with next window or exit
 				return nil
 			}
-			return err
+	return err
 		}
 	}
 }
@@ -195,6 +303,21 @@ func (sw *scrollbackWriter) Write(p []byte) (n int, err error) {
 	return len(p), nil
 }
 
+// activityTrackingWriter wraps a writer to track activity
+type activityTrackingWriter struct {
+	writer   io.Writer
+	monitor  *ActivityMonitor
+	windowID int
+}
+
+func (atw *activityTrackingWriter) Write(p []byte) (n int, err error) {
+	n, err = atw.writer.Write(p)
+	if n > 0 && atw.monitor != nil {
+		atw.monitor.RecordActivity(atw.windowID)
+	}
+	return n, err
+}
+
 // handleWindowCommand handles window management commands
 func handleWindowCommand(sess *session.Session, cmd *ErrWindowCommand, config *AttachConfig, in, out *os.File, scrollback *ScrollbackBuffer) error {
 	switch cmd.Command {
@@ -211,10 +334,18 @@ func handleWindowCommand(sess *session.Session, cmd *ErrWindowCommand, config *A
 			AllCapabilities: config.AllCapabilities,
 		}
 		
-		_, err := sess.CreateWindow(shellPath, []string{}, sessConfig)
+		win, err := sess.CreateWindow(shellPath, []string{}, sessConfig)
 		if err != nil {
 			return fmt.Errorf("failed to create window: %w", err)
 		}
+		
+		// Apply shelltitle if configured
+		if config.ShellTitle != "" {
+			// For now, use shelltitle as the initial title
+			// In full implementation, this would parse the format and detect prompt
+			win.Title = config.ShellTitle
+		}
+		
 		return nil
 		
 	case "next":
@@ -243,9 +374,8 @@ func handleWindowCommand(sess *session.Session, cmd *ErrWindowCommand, config *A
 		return nil
 		
 	case "list":
-		// Show window list - for now, just switch (full implementation would show interactive list)
-		// This is a placeholder - full implementation would show a selectable list
-		return nil
+		// Show interactive window list
+		return ShowInteractiveWindowList(in, out, sess)
 		
 	case "copymode":
 		// Enter copy mode
@@ -302,13 +432,57 @@ func handleWindowCommand(sess *session.Session, cmd *ErrWindowCommand, config *A
 			// Show command prompt
 			return ShowCommandPrompt(in, out, sess, config, scrollback)
 		
-		case "redraw":
-			// Redraw screen - clear and redraw
-			fmt.Fprint(out, "\033[2J\033[H")
-			return nil
+	case "redraw":
+		// Redraw screen - clear and redraw
+		fmt.Fprint(out, "\033[2J\033[H")
+		return nil
 		
-		default:
-			return fmt.Errorf("unknown window command: %s", cmd.Command)
+	case "lock":
+		// Lock screen
+		return lockScreen(in, out)
+		
+	case "version":
+		// Version information
+		ShowVersion(out)
+		// Wait for key press
+		buf := make([]byte, 1)
+		in.Read(buf)
+		return nil
+		
+	case "license":
+		// License information
+		ShowLicense(out)
+		// Wait for key press
+		buf := make([]byte, 1)
+		in.Read(buf)
+		return nil
+		
+	case "time":
+		// Time/load display
+		ShowTimeLoad(out)
+		// Wait for key press
+		buf := make([]byte, 1)
+		in.Read(buf)
+		return nil
+		
+	case "blank":
+		// Blank screen
+		BlankScreen(out)
+		// Wait for key press
+		buf := make([]byte, 1)
+		in.Read(buf)
+		return nil
+		
+	case "suspend":
+		// Suspend screen
+		return suspendScreen()
+		
+	case "killall":
+		// Kill all windows and terminate
+		return killAllWindows(sess)
+		
+	default:
+		return fmt.Errorf("unknown window command: %s", cmd.Command)
 	}
 }
 
@@ -391,10 +565,11 @@ func setWindowSize(termFile *os.File, sess *session.Session, adaptSize bool) err
 // detachReader wraps an io.Reader to detect the detach sequence
 type detachReader struct {
 	reader      io.Reader
-	state       int    // 0: normal, 1: saw command char
-	pending     []byte // bytes to output before reading more
-	commandChar byte   // Command character (default: Ctrl+A = 0x01)
-	literalChar byte   // Literal escape character (default: 'a')
+	state       int            // 0: normal, 1: saw command char
+	pending     []byte         // bytes to output before reading more
+	commandChar byte           // Command character (default: Ctrl+A = 0x01)
+	literalChar byte           // Literal escape character (default: 'a')
+	bindings    map[string]string // Custom key bindings (key -> command)
 }
 
 func newDetachReader(reader io.Reader) *detachReader {
@@ -402,12 +577,19 @@ func newDetachReader(reader io.Reader) *detachReader {
 }
 
 func newDetachReaderWithConfig(reader io.Reader, config *AttachConfig) *detachReader {
+	bindings := make(map[string]string)
+	if config.Bindings != nil {
+		for k, v := range config.Bindings {
+			bindings[k] = v
+		}
+	}
 	return &detachReader{
 		reader:      reader,
 		state:       0,
 		pending:     make([]byte, 0, 2),
 		commandChar: config.CommandChar,
 		literalChar: config.LiteralChar,
+		bindings:    bindings,
 	}
 }
 
@@ -452,6 +634,16 @@ func (dr *detachReader) Read(p []byte) (n int, err error) {
 
 	case 1:
 		// Saw command char, waiting for command
+		// Check for custom binding first
+		keyStr := string(b)
+		if dr.bindings != nil {
+			if cmd, found := dr.bindings[keyStr]; found {
+				// Custom binding found - execute the command
+				dr.state = 0
+				return 0, &ErrWindowCommand{Command: cmd}
+			}
+		}
+		
 		switch b {
 		case 'd':
 			// Detach sequence detected
@@ -516,6 +708,29 @@ func (dr *detachReader) Read(p []byte) (n int, err error) {
 		case '.':
 			// Redraw screen
 			return 0, &ErrWindowCommand{Command: "redraw"}
+		case 'x':
+			// Lock screen
+			return 0, &ErrWindowCommand{Command: "lock"}
+		case 'v':
+			// Version information
+			return 0, &ErrWindowCommand{Command: "version"}
+		case ',':
+			// License information
+			return 0, &ErrWindowCommand{Command: "license"}
+		case 't':
+			// Time/load display
+			return 0, &ErrWindowCommand{Command: "time"}
+		case '_':
+			// Blank screen
+			return 0, &ErrWindowCommand{Command: "blank"}
+		case 's':
+			// Suspend screen
+			return 0, &ErrWindowCommand{Command: "suspend"}
+		case '\\':
+			// Kill all windows and terminate (C-a C-\)
+			if dr.state == 1 {
+				return 0, &ErrWindowCommand{Command: "killall"}
+			}
 		case '0', '1', '2', '3', '4', '5', '6', '7', '8', '9':
 			// Switch to window 0-9
 			return 0, &ErrWindowCommand{Command: "switch", Window: string(b)}
@@ -538,12 +753,12 @@ func (dr *detachReader) Read(p []byte) (n int, err error) {
 				return 0, &ErrWindowCommand{Command: "switch", Window: string(b)}
 			}
 			// Not a recognized command, output the command char we held back, then this byte
-			dr.state = 0
-			if len(p) >= 2 {
+		dr.state = 0
+		if len(p) >= 2 {
 				p[0] = dr.commandChar
-				p[1] = b
-				return 2, nil
-			}
+			p[1] = b
+			return 2, nil
+		}
 			// Buffer too small, output command char and buffer the next byte
 			p[0] = dr.commandChar
 			dr.pending = append(dr.pending, b)
@@ -618,6 +833,11 @@ func (dr *detachReader) Read(p []byte) (n int, err error) {
 
 // createOutputWriter creates an output writer with optional logging
 func createOutputWriter(out io.Writer, config *AttachConfig) io.Writer {
+	return createOutputWriterForWindow(out, config, nil, "")
+}
+
+// createOutputWriterForWindow creates an output writer with per-window logging support
+func createOutputWriterForWindow(out io.Writer, config *AttachConfig, win *session.Window, logDir string) io.Writer {
 	if !config.Logging && config.Logfile == "" {
 		return out
 	}
@@ -625,13 +845,116 @@ func createOutputWriter(out io.Writer, config *AttachConfig) io.Writer {
 	// Create multi-writer for both output and log file
 	writers := []io.Writer{out}
 
+	// Per-window logging
+	if config.Logging && win != nil && logDir != "" {
+		// Create per-window log writer
+		pwlw := getPerWindowLogWriter(logDir, true) // timestamp enabled
+		if writer, err := pwlw.GetWriter(win.ID, win.Title); err == nil {
+			writers = append(writers, writer)
+		}
+	}
+
+	// Global log file
 	if config.Logfile != "" {
-		logFile, err := os.OpenFile(config.Logfile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+		logWriter, err := NewLogWriter(config.Logfile, true) // timestamp enabled
 		if err == nil {
-			writers = append(writers, logFile)
+			writers = append(writers, logWriter)
+		} else {
+			// Fallback to simple file
+			logFile, err := os.OpenFile(config.Logfile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+			if err == nil {
+				writers = append(writers, logFile)
+			}
 		}
 	}
 
 	return io.MultiWriter(writers...)
+}
+
+// lockScreen locks the screen with password prompt
+func lockScreen(in, out *os.File) error {
+	fmt.Fprint(out, "\r\nScreen locked. Enter password: ")
+	
+	// Read password (without echo)
+	oldState, err := term.GetState(int(in.Fd()))
+	if err != nil {
+		return err
+	}
+	defer term.Restore(int(in.Fd()), oldState)
+	
+	// Set terminal to no-echo mode
+	term.MakeRaw(int(in.Fd()))
+	
+	password := ""
+	buf := make([]byte, 1)
+	for {
+		n, err := in.Read(buf)
+		if err != nil || n == 0 {
+			break
+		}
+		if buf[0] == '\r' || buf[0] == '\n' {
+			break
+		}
+		if buf[0] == '\b' || buf[0] == 0x7f {
+			if len(password) > 0 {
+				password = password[:len(password)-1]
+				fmt.Fprint(out, "\b \b")
+			}
+		} else {
+			password += string(buf[0])
+			fmt.Fprint(out, "*")
+		}
+	}
+	
+	fmt.Fprint(out, "\r\n")
+	
+	// For now, any password unlocks (in real implementation, would verify)
+	// Wait for any key to unlock
+	fmt.Fprint(out, "Press any key to unlock...")
+	in.Read(buf)
+	fmt.Fprint(out, "\r\n")
+	
+	return nil
+}
+
+// suspendScreen suspends the screen process
+func suspendScreen() error {
+	// Send SIGTSTP to self
+	proc, err := os.FindProcess(os.Getpid())
+	if err != nil {
+		return err
+	}
+	return proc.Signal(unix.SIGTSTP)
+}
+
+// killAllWindows kills all windows and terminates the session
+func killAllWindows(sess *session.Session) error {
+	// Kill all windows
+	for _, win := range sess.Windows {
+		if win.GetPTYProcess() != nil {
+			win.GetPTYProcess().Kill()
+		}
+	}
+	// Session will terminate when all windows are killed
+	return nil
+}
+
+var (
+	perWindowLogWriters = make(map[string]*PerWindowLogWriter)
+	logWritersMu        sync.RWMutex
+)
+
+// getPerWindowLogWriter gets or creates a per-window log writer for a session
+func getPerWindowLogWriter(logDir string, timestamp bool) *PerWindowLogWriter {
+	logWritersMu.Lock()
+	defer logWritersMu.Unlock()
+
+	if writer, exists := perWindowLogWriters[logDir]; exists {
+		return writer
+	}
+
+	writer := NewPerWindowLogWriter(logDir, timestamp)
+	perWindowLogWriters[logDir] = writer
+	return writer
 }
 

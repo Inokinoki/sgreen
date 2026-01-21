@@ -62,6 +62,16 @@ func New(id, cmdPath string, args []string) (*Session, error) {
 
 // NewWithConfig creates a new session with configuration options
 func NewWithConfig(id, cmdPath string, args []string, config *Config) (*Session, error) {
+	// Validate session name
+	if id == "" {
+		return nil, fmt.Errorf("session name cannot be empty")
+	}
+	for _, r := range id {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_') {
+			return nil, fmt.Errorf("invalid session name: only alphanumeric characters, dash, and underscore allowed")
+		}
+	}
+	
 	sessionsMu.Lock()
 	defer sessionsMu.Unlock()
 
@@ -275,15 +285,47 @@ func List() []*Session {
 	// Add disk sessions that aren't in memory
 	for _, sess := range diskSessions {
 		if !seen[sess.ID] {
-			// Try to reconnect if process is still alive
-			if sess.PtsPath != "" && isProcessAlive(sess.Pid) {
+			// Try to reconnect windows if processes are still alive
+			hasAliveWindow := false
+			for _, win := range sess.Windows {
+				if win.PtsPath != "" && isProcessAlive(win.Pid) {
+					if err := sess.ReconnectPTY(); err == nil {
+						hasAliveWindow = true
+					}
+				}
+			}
+			// Also try old method for backward compatibility
+			if !hasAliveWindow && sess.PtsPath != "" && isProcessAlive(sess.Pid) {
 				sess.ReconnectPTY()
 			}
 			result = append(result, sess)
 		}
 	}
 
-	return result
+	// Clean up dead sessions from result
+	cleanedResult := make([]*Session, 0, len(result))
+	for _, sess := range result {
+		hasAliveWindow := false
+		if len(sess.Windows) > 0 {
+			for _, win := range sess.Windows {
+				if win.GetPTYProcess() != nil && win.GetPTYProcess().IsAlive() {
+					hasAliveWindow = true
+					break
+				}
+			}
+		} else {
+			// Fallback check
+			if sess.GetPTYProcess() != nil && sess.GetPTYProcess().IsAlive() {
+				hasAliveWindow = true
+			}
+		}
+		if hasAliveWindow || len(sess.Windows) == 0 {
+			// Keep session if it has alive windows or is a legacy session
+			cleanedResult = append(cleanedResult, sess)
+		}
+	}
+
+	return cleanedResult
 }
 
 // loadAllFromDisk loads all session files from disk
@@ -577,6 +619,56 @@ func (s *Session) SetWindowTitle(title string) {
 			win.Title = title
 		}
 	}
+}
+
+// Rename renames the session
+func (s *Session) Rename(newID string) error {
+	if newID == "" {
+		return fmt.Errorf("session name cannot be empty")
+	}
+	
+	// Validate session name (alphanumeric, dash, underscore)
+	for _, r := range newID {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_') {
+			return fmt.Errorf("invalid session name: only alphanumeric characters, dash, and underscore allowed")
+		}
+	}
+	
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	
+	// Check if new name already exists
+	sessionsMu.RLock()
+	if _, exists := sessions[newID]; exists {
+		sessionsMu.RUnlock()
+		return fmt.Errorf("session %s already exists", newID)
+	}
+	sessionsMu.RUnlock()
+	
+	oldID := s.ID
+	oldPath := filepath.Join(sessionsDir, oldID+".json")
+	newPath := filepath.Join(sessionsDir, newID+".json")
+	
+	// Update in-memory map
+	sessionsMu.Lock()
+	delete(sessions, oldID)
+	s.ID = newID
+	sessions[newID] = s
+	sessionsMu.Unlock()
+	
+	// Rename file on disk
+	if err := os.Rename(oldPath, newPath); err != nil {
+		// Rollback in-memory change
+		sessionsMu.Lock()
+		delete(sessions, newID)
+		s.ID = oldID
+		sessions[oldID] = s
+		sessionsMu.Unlock()
+		return fmt.Errorf("failed to rename session file: %w", err)
+	}
+	
+	// Save updated session
+	return s.save()
 }
 
 // ForceDetach forces a detach by clearing the PTY process reference

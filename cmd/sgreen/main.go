@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -36,7 +37,17 @@ type Config struct {
 	Multiuser      bool
 	FlowControl    string // "on", "off", "auto"
 	Interrupt      bool
-}
+	StartupMessage bool
+	Bell           bool
+	VBell          bool
+		ActivityMsg    string
+		SilenceMsg     string
+		SilenceTimeout int
+		Bindings       map[string]string // Key bindings from config file
+		Hardstatus     string            // Hardstatus line configuration
+		Caption        string            // Caption line configuration
+		ShellTitle     string            // Shell title format
+	}
 
 func main() {
 	// Parse flags
@@ -107,6 +118,7 @@ func main() {
 		Multiuser:      *multiuser,
 		FlowControl:    *flowControl,
 		Interrupt:      *interrupt,
+		Bindings:       make(map[string]string),
 	}
 	
 	// Handle -fn and -fa flags (screen-compatible)
@@ -222,8 +234,43 @@ func handleWipe() {
 	
 	for _, sess := range sessions {
 		// Check if session is dead
-		if !isProcessAliveByPID(sess.Pid) {
-			// Remove dead session
+		isDead := false
+		
+		// Check all windows in the session
+		if len(sess.Windows) > 0 {
+			allWindowsDead := true
+			for _, win := range sess.Windows {
+				if win.GetPTYProcess() != nil && win.GetPTYProcess().IsAlive() {
+					allWindowsDead = false
+					break
+				}
+				// Try to reconnect if we have pts path
+				if win.PtsPath != "" {
+					if err := sess.ReconnectPTY(); err == nil {
+						allWindowsDead = false
+			break
+					}
+				}
+			}
+			if allWindowsDead {
+				isDead = true
+			}
+		} else {
+			// Fallback to old method for backward compatibility
+			if !isProcessAliveByPID(sess.Pid) {
+				// Try to reconnect first
+				if sess.PtsPath != "" {
+					if err := sess.ReconnectPTY(); err != nil {
+						isDead = true
+					}
+				} else {
+					isDead = true
+				}
+			}
+		}
+		
+		if isDead {
+			// Session is dead, remove it
 			if err := session.Delete(sess.ID); err == nil {
 				removed++
 			}
@@ -315,9 +362,17 @@ func handleNew(sessionName string, cmdArgs []string, config *Config) {
 		}
 	}
 
-	// Load config file if specified
-	if config.ConfigFile != "" {
-		loadConfigFile(config.ConfigFile, config)
+	// Load config file (from -c flag, $SCREENRC, or $HOME/.screenrc)
+	// Only load if not explicitly disabled
+	configFile := config.ConfigFile
+	if configFile == "" && !config.IgnoreSTY {
+		// Try to find default config file
+		if found, err := findDefaultConfigFile(); err == nil && found != "" {
+			configFile = found
+		}
+	}
+	if configFile != "" {
+		loadConfigFile(configFile, config)
 	}
 
 	// Handle window preselection (-p)
@@ -382,18 +437,31 @@ func handleReattachWithConfig(sessionName string, config *Config) {
 		}
 	} else {
 		// Find first detached session, or first session if only one
-		detached := findDetachedSessions(sessions)
-		if len(detached) == 1 {
-			sess = detached[0]
-		} else if len(sessions) == 1 {
-			sess = sessions[0]
-		} else if len(detached) > 1 {
-			fmt.Fprintf(os.Stderr, "There are several detached sessions:\n")
-			printSessionList(sessions)
-			os.Exit(1)
+		// In multiuser mode, allow attaching to any session
+		if config.Multiuser {
+			// Multiuser: allow attaching to any session, even if attached
+			if len(sessions) == 1 {
+				sess = sessions[0]
+			} else {
+				fmt.Fprintf(os.Stderr, "Multiple sessions found. Specify session name with -x:\n")
+				printSessionList(sessions)
+				os.Exit(1)
+			}
 		} else {
-			fmt.Fprintf(os.Stderr, "No detached screen session found.\n")
-			os.Exit(1)
+			// Normal mode: only attach to detached sessions
+			detached := findDetachedSessions(sessions)
+			if len(detached) == 1 {
+				sess = detached[0]
+			} else if len(sessions) == 1 {
+				sess = sessions[0]
+			} else if len(detached) > 1 {
+				fmt.Fprintf(os.Stderr, "There are several detached sessions:\n")
+				printSessionList(sessions)
+				os.Exit(1)
+			} else {
+				fmt.Fprintf(os.Stderr, "No detached screen session found.\n")
+				os.Exit(1)
+			}
 		}
 	}
 
@@ -610,6 +678,34 @@ func attachToSession(sess *session.Session, config *Config) {
 		attachConfig.Interrupt = config.Interrupt
 		attachConfig.Term = config.Term
 		attachConfig.Scrollback = config.Scrollback
+		// Enable status line if hardstatus or caption is configured
+		if config.Hardstatus != "" {
+			attachConfig.StatusLine = true
+			attachConfig.StatusFormat = config.Hardstatus
+		} else if config.Caption != "" {
+			attachConfig.StatusLine = true
+			attachConfig.StatusFormat = config.Caption
+		} else {
+			attachConfig.StatusLine = false
+			attachConfig.StatusFormat = ""
+		}
+		// Startup message and bell settings
+		attachConfig.StartupMessage = config.StartupMessage
+		attachConfig.Bell = config.Bell
+		attachConfig.VBell = config.VBell
+		// Activity and silence monitoring
+		attachConfig.ActivityMsg = config.ActivityMsg
+		attachConfig.SilenceMsg = config.SilenceMsg
+		attachConfig.SilenceTimeout = config.SilenceTimeout
+		// Key bindings
+		if config.Bindings != nil {
+			attachConfig.Bindings = make(map[string]string)
+			for k, v := range config.Bindings {
+				attachConfig.Bindings[k] = v
+			}
+		}
+		// Shell title format
+		attachConfig.ShellTitle = config.ShellTitle
 	}
 
 	err := ui.AttachWithConfig(os.Stdin, os.Stdout, os.Stderr, sess, attachConfig)
@@ -732,11 +828,36 @@ func isProcessAliveByPID(pid int) bool {
 	return err == nil
 }
 
+// findDefaultConfigFile finds the default config file location
+func findDefaultConfigFile() (string, error) {
+	// Check $SCREENRC environment variable
+	if screenrc := os.Getenv("SCREENRC"); screenrc != "" {
+		if _, err := os.Stat(screenrc); err == nil {
+			return screenrc, nil
+		}
+	}
+
+	// Check $HOME/.screenrc
+	homeDir, err := os.UserHomeDir()
+	if err == nil {
+		screenrc := filepath.Join(homeDir, ".screenrc")
+		if _, err := os.Stat(screenrc); err == nil {
+			return screenrc, nil
+		}
+	}
+
+	// Check system-wide config
+	if systemScreenrc := os.Getenv("SYSTEM_SCREENRC"); systemScreenrc != "" {
+		if _, err := os.Stat(systemScreenrc); err == nil {
+			return systemScreenrc, nil
+		}
+	}
+
+	return "", nil
+}
+
 // loadConfigFile loads configuration from a .screenrc file
 func loadConfigFile(configFile string, config *Config) {
-	// Basic config file parsing
-	// For now, just check if file exists and is readable
-	// Full parsing would require implementing screenrc parser
 	if _, err := os.Stat(configFile); err != nil {
 		if !config.Quiet {
 			fmt.Fprintf(os.Stderr, "Warning: config file %s not found, using defaults\n", configFile)
@@ -744,7 +865,7 @@ func loadConfigFile(configFile string, config *Config) {
 		return
 	}
 	
-	// Read and parse basic config file
+	// Read and parse config file
 	data, err := os.ReadFile(configFile)
 	if err != nil {
 		if !config.Quiet {
@@ -753,13 +874,26 @@ func loadConfigFile(configFile string, config *Config) {
 		return
 	}
 	
-	// Basic parsing of common .screenrc directives
+	// Parse config file with enhanced parser
 	lines := strings.Split(string(data), "\n")
-	for _, line := range lines {
+	processedFiles := make(map[string]bool)
+	baseDir := filepath.Dir(configFile)
+	
+	for i, line := range lines {
 		line = strings.TrimSpace(line)
+		
 		// Skip comments and empty lines
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
+		}
+
+		// Handle line continuation
+		if strings.HasSuffix(line, "\\") {
+			line = strings.TrimSuffix(line, "\\")
+			if i+1 < len(lines) {
+				nextLine := strings.TrimSpace(lines[i+1])
+				line = line + " " + nextLine
+			}
 		}
 		
 		parts := strings.Fields(line)
@@ -768,37 +902,163 @@ func loadConfigFile(configFile string, config *Config) {
 		}
 		
 		directive := parts[0]
+		args := parts[1:]
+
 		switch directive {
+		case "source", "sourcefile":
+			// Handle source directive
+			if len(args) > 0 {
+				sourceFile := args[0]
+				if !filepath.IsAbs(sourceFile) {
+					sourceFile = filepath.Join(baseDir, sourceFile)
+				}
+				
+				if processedFiles[sourceFile] {
+					continue
+				}
+				processedFiles[sourceFile] = true
+
+				// Recursively load source file
+				loadConfigFile(sourceFile, config)
+			}
+
 		case "escape":
-			if len(parts) >= 2 {
-				// Parse escape directive: escape ^Aa
-				config.CommandChar = parts[1]
-				if len(parts) >= 3 {
-					config.LiteralChar = parts[2]
+			if len(args) >= 1 {
+				escapeStr := args[0]
+				// Parse escape string like "^Aa"
+				if len(escapeStr) >= 2 {
+					config.CommandChar = escapeStr[:1]
+					config.LiteralChar = escapeStr[1:2]
 				}
 			}
+
+		case "shell":
+			if len(args) >= 1 {
+				config.Shell = strings.Join(args, " ")
+			}
+
 		case "defscrollback":
-			if len(parts) >= 2 {
-				if val, err := strconv.Atoi(parts[1]); err == nil {
+			if len(args) >= 1 {
+				if val, err := strconv.Atoi(args[0]); err == nil {
 					config.Scrollback = val
 				}
 			}
-		case "shell":
-			if len(parts) >= 2 {
-				config.Shell = parts[1]
-			}
+
 		case "logfile":
-			if len(parts) >= 2 {
-				config.Logfile = parts[1]
+			if len(args) >= 1 {
+				config.Logfile = strings.Join(args, " ")
 				config.Logging = true
 			}
-		case "defflow":
-			if len(parts) >= 2 {
-				config.FlowControl = parts[1]
+
+		case "log":
+			if len(args) >= 1 && args[0] == "on" {
+				config.Logging = true
+			} else if len(args) >= 1 && args[0] == "off" {
+				config.Logging = false
 			}
+
+		case "defflow":
+			if len(args) >= 1 {
+				config.FlowControl = args[0]
+			}
+
 		case "definterrupt":
-			if len(parts) >= 2 && parts[1] == "on" {
+			if len(args) >= 1 && args[0] == "on" {
 				config.Interrupt = true
+			} else if len(args) >= 1 && args[0] == "off" {
+				config.Interrupt = false
+			}
+
+		case "startup_message":
+			if len(args) >= 1 && args[0] == "off" {
+				config.StartupMessage = false
+			} else {
+				config.StartupMessage = true
+			}
+
+		case "bell":
+			if len(args) >= 1 && args[0] == "off" {
+				config.Bell = false
+			} else {
+				config.Bell = true
+			}
+
+		case "vbell":
+			if len(args) >= 1 && args[0] == "off" {
+				config.VBell = false
+			} else {
+				config.VBell = true
+			}
+
+		case "activity":
+			if len(args) >= 1 {
+				config.ActivityMsg = strings.Join(args, " ")
+			} else {
+				config.ActivityMsg = "Activity in window %n"
+			}
+
+		case "silence":
+			if len(args) >= 1 {
+				config.SilenceMsg = strings.Join(args, " ")
+			} else {
+				config.SilenceMsg = "Silence in window %n"
+			}
+			// Default silence timeout is 30 seconds if not specified
+			if config.SilenceTimeout == 0 {
+				config.SilenceTimeout = 30
+			}
+
+		case "hardstatus":
+			// Parse hardstatus configuration
+			// Format: hardstatus [on|off] or hardstatus string [format]
+			if len(args) >= 1 {
+				if args[0] == "on" || args[0] == "off" {
+					// Toggle format - for now, just enable if "on"
+					if args[0] == "on" && config.Hardstatus == "" {
+						config.Hardstatus = "%h" // Default format
+					} else if args[0] == "off" {
+						config.Hardstatus = ""
+					}
+				} else if args[0] == "string" && len(args) >= 2 {
+					// Format: hardstatus string <format>
+					config.Hardstatus = strings.Join(args[1:], " ")
+				} else {
+					// Assume it's a format string
+					config.Hardstatus = strings.Join(args, " ")
+				}
+			}
+
+		case "caption":
+			// Parse caption configuration
+			// Format: caption [always|splitonly] or caption string [format]
+			if len(args) >= 1 {
+				if args[0] == "string" && len(args) >= 2 {
+					// Format: caption string <format>
+					config.Caption = strings.Join(args[1:], " ")
+				} else if args[0] != "always" && args[0] != "splitonly" {
+					// Assume it's a format string
+					config.Caption = strings.Join(args, " ")
+				}
+			}
+
+		case "shelltitle":
+			// Store shelltitle format
+			if len(args) >= 1 {
+				config.ShellTitle = strings.Join(args, " ")
+			}
+
+		case "bind", "bindkey":
+			// Store key bindings: bind key command
+			if len(args) >= 2 {
+				key := args[0]
+				command := strings.Join(args[1:], " ")
+				config.Bindings[key] = command
+			}
+
+		case "unbind", "unbindkey":
+			// Remove key binding
+			if len(args) >= 1 {
+				delete(config.Bindings, args[0])
 			}
 		}
 	}

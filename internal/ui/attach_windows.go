@@ -8,11 +8,24 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"sync"
+	"time"
 
 	"golang.org/x/term"
 
 	"github.com/inoki/sgreen/internal/session"
 )
+
+// scrollbackWriter wraps a writer to also write to scrollback buffer
+type scrollbackWriter struct {
+	scrollback *ScrollbackBuffer
+}
+
+func (sw *scrollbackWriter) Write(p []byte) (n int, err error) {
+	sw.scrollback.AppendBytes(p)
+	return len(p), nil
+}
 
 var (
 	// ErrDetach is returned when the user detaches from a session
@@ -80,7 +93,19 @@ func attachLoopWindows(in *os.File, out *os.File, errOut *os.File, sess *session
 		}
 
 		// Create output writer (with logging if enabled)
-		outputWriter := createOutputWriter(out, config)
+		// Determine log directory for per-window logging
+		logDir := ""
+		if config.Logging && config.Logfile != "" {
+			logDir = filepath.Dir(config.Logfile)
+		} else if config.Logging {
+			// Default log directory
+			homeDir, _ := os.UserHomeDir()
+			if homeDir != "" {
+				logDir = filepath.Join(homeDir, ".sgreen", "logs")
+				os.MkdirAll(logDir, 0755)
+			}
+		}
+		outputWriter := createOutputWriterForWindow(out, config, win, logDir)
 
 		// Wrap output writer to also write to scrollback
 		scrollbackWriter := io.MultiWriter(outputWriter, &scrollbackWriter{scrollback: scrollback})
@@ -226,10 +251,11 @@ func setWindowSize(termFile *os.File, sess *session.Session, adaptSize bool) err
 // detachReader wraps an io.Reader to detect the detach sequence
 type detachReader struct {
 	reader      io.Reader
-	state       int    // 0: normal, 1: saw command char
-	pending     []byte // bytes to output before reading more
-	commandChar byte   // Command character (default: Ctrl+A = 0x01)
-	literalChar byte   // Literal escape character (default: 'a')
+	state       int            // 0: normal, 1: saw command char
+	pending     []byte         // bytes to output before reading more
+	commandChar byte           // Command character (default: Ctrl+A = 0x01)
+	literalChar byte           // Literal escape character (default: 'a')
+	bindings    map[string]string // Custom key bindings (key -> command)
 }
 
 func newDetachReader(reader io.Reader) *detachReader {
@@ -237,12 +263,19 @@ func newDetachReader(reader io.Reader) *detachReader {
 }
 
 func newDetachReaderWithConfig(reader io.Reader, config *AttachConfig) *detachReader {
+	bindings := make(map[string]string)
+	if config.Bindings != nil {
+		for k, v := range config.Bindings {
+			bindings[k] = v
+		}
+	}
 	return &detachReader{
 		reader:      reader,
 		state:       0,
 		pending:     make([]byte, 0, 2),
 		commandChar: config.CommandChar,
 		literalChar: config.LiteralChar,
+		bindings:    bindings,
 	}
 }
 
@@ -287,6 +320,16 @@ func (dr *detachReader) Read(p []byte) (n int, err error) {
 
 	case 1:
 		// Saw command char, waiting for command
+		// Check for custom binding first
+		keyStr := string(b)
+		if dr.bindings != nil {
+			if cmd, found := dr.bindings[keyStr]; found {
+				// Custom binding found - execute the command
+				dr.state = 0
+				return 0, &ErrWindowCommand{Command: cmd}
+			}
+		}
+		
 		switch b {
 		case 'd':
 			// Detach sequence detected
@@ -509,9 +552,8 @@ func handleWindowCommand(sess *session.Session, cmd *ErrWindowCommand, config *A
 		return nil
 		
 	case "list":
-		// Show window list - for now, just switch (full implementation would show interactive list)
-		// This is a placeholder - full implementation would show a selectable list
-		return nil
+		// Show interactive window list
+		return ShowInteractiveWindowList(in, out, sess)
 		
 	case "copymode":
 		// Enter copy mode
@@ -578,8 +620,13 @@ func handleWindowCommand(sess *session.Session, cmd *ErrWindowCommand, config *A
 	}
 }
 
-// createOutputWriter creates an output writer with optional logging
+// createOutputWriter creates an output writer with optional logging (backward compatibility)
 func createOutputWriter(out io.Writer, config *AttachConfig) io.Writer {
+	return createOutputWriterForWindow(out, config, nil, "")
+}
+
+// createOutputWriterForWindow creates an output writer with per-window logging support
+func createOutputWriterForWindow(out io.Writer, config *AttachConfig, win *session.Window, logDir string) io.Writer {
 	if !config.Logging && config.Logfile == "" {
 		return out
 	}
@@ -587,32 +634,48 @@ func createOutputWriter(out io.Writer, config *AttachConfig) io.Writer {
 	// Create multi-writer for both output and log file
 	writers := []io.Writer{out}
 
+	// Per-window logging
+	if config.Logging && win != nil && logDir != "" {
+		// Create per-window log writer
+		pwlw := getPerWindowLogWriter(logDir, true) // timestamp enabled
+		if writer, err := pwlw.GetWriter(win.ID, win.Title); err == nil {
+			writers = append(writers, writer)
+		}
+	}
+
+	// Global log file
 	if config.Logfile != "" {
-		logFile, err := os.OpenFile(config.Logfile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+		logWriter, err := NewLogWriter(config.Logfile, true) // timestamp enabled
 		if err == nil {
-			writers = append(writers, logFile)
+			writers = append(writers, logWriter)
+		} else {
+			// Fallback to simple file
+			logFile, err := os.OpenFile(config.Logfile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+			if err == nil {
+				writers = append(writers, logFile)
+			}
 		}
 	}
 
 	return io.MultiWriter(writers...)
 }
 
-// createOutputWriter creates an output writer with optional logging
-func createOutputWriter(out io.Writer, config *AttachConfig) io.Writer {
-	if !config.Logging && config.Logfile == "" {
-		return out
+var (
+	perWindowLogWriters = make(map[string]*PerWindowLogWriter)
+	logWritersMu        sync.RWMutex
+)
+
+// getPerWindowLogWriter gets or creates a per-window log writer for a session
+func getPerWindowLogWriter(logDir string, timestamp bool) *PerWindowLogWriter {
+	logWritersMu.Lock()
+	defer logWritersMu.Unlock()
+
+	if writer, exists := perWindowLogWriters[logDir]; exists {
+		return writer
 	}
 
-	// Create multi-writer for both output and log file
-	writers := []io.Writer{out}
-
-	if config.Logfile != "" {
-		logFile, err := os.OpenFile(config.Logfile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-		if err == nil {
-			writers = append(writers, logFile)
-		}
-	}
-
-	return io.MultiWriter(writers...)
+	writer := NewPerWindowLogWriter(logDir, timestamp)
+	perWindowLogWriters[logDir] = writer
+	return writer
 }
 

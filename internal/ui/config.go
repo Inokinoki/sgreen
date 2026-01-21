@@ -14,6 +14,16 @@ type AttachConfig struct {
 	Interrupt      bool   // Interrupt output immediately when flow control is on
 	Term           string // Terminal type (for window creation)
 	Scrollback     int    // Scrollback buffer size
+	StatusLine     bool   // Enable status line
+	StatusFormat   string // Status line format string
+	StartupMessage bool   // Show startup message
+	Bell           bool   // Enable bell
+	VBell          bool   // Enable visual bell
+	ActivityMsg    string            // Activity message template
+	SilenceMsg     string            // Silence message template
+	SilenceTimeout int               // Silence timeout in seconds
+	Bindings       map[string]string // Custom key bindings (key -> command)
+	ShellTitle     string            // Shell title format
 }
 
 // DefaultAttachConfig returns default attach configuration

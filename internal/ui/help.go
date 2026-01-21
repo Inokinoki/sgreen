@@ -8,6 +8,20 @@ import (
 	"github.com/inoki/sgreen/internal/session"
 )
 
+// Command history storage
+var (
+	commandHistory []string
+	historyIndex   int = -1
+	maxHistory     int = 100
+)
+
+// Available commands for completion
+var availableCommands = []string{
+	"title", "kill", "next", "prev", "select", "copy", "paste",
+	"writebuf", "readbuf", "dump", "list", "help", "quit", "detach",
+	"rename", "lock",
+}
+
 // ShowHelp displays the help screen with key bindings
 func ShowHelp(out *os.File) {
 	helpText := `
@@ -68,9 +82,11 @@ Press any key to continue...
 func ShowCommandPrompt(in, out *os.File, sess *session.Session, config *AttachConfig, scrollback *ScrollbackBuffer) error {
 	fmt.Fprint(out, "\r\n: ")
 	
-	// Read command line
+	// Read command line with history and completion support
 	cmdLine := make([]byte, 0, 256)
 	buf := make([]byte, 1)
+	currentHistoryIndex := -1
+	originalCmd := ""
 	
 	for {
 		n, err := in.Read(buf)
@@ -79,33 +95,141 @@ func ShowCommandPrompt(in, out *os.File, sess *session.Session, config *AttachCo
 		}
 		
 		b := buf[0]
+		
+		// Handle escape sequences (arrow keys, etc.)
+		if b == 0x1b { // ESC
+			// Read next bytes to determine escape sequence
+			seq := make([]byte, 0, 4)
+			for i := 0; i < 3; i++ {
+				n2, err2 := in.Read(buf)
+				if err2 != nil || n2 == 0 {
+					break
+				}
+				seq = append(seq, buf[0])
+				if buf[0] >= 0x40 && buf[0] <= 0x7E {
+					break
+				}
+			}
+			
+			// Handle arrow keys
+			if len(seq) >= 2 && seq[0] == '[' {
+				switch seq[1] {
+				case 'A': // Up arrow - history previous
+					if len(commandHistory) > 0 {
+						if currentHistoryIndex == -1 {
+							originalCmd = string(cmdLine)
+							currentHistoryIndex = len(commandHistory) - 1
+						} else if currentHistoryIndex > 0 {
+							currentHistoryIndex--
+						}
+						// Clear current line
+						fmt.Fprint(out, "\r\033[K: ")
+						cmdLine = []byte(commandHistory[currentHistoryIndex])
+						fmt.Fprint(out, string(cmdLine))
+					}
+					continue
+				case 'B': // Down arrow - history next
+					if currentHistoryIndex >= 0 {
+						if currentHistoryIndex < len(commandHistory)-1 {
+							currentHistoryIndex++
+							// Clear current line
+							fmt.Fprint(out, "\r\033[K: ")
+							cmdLine = []byte(commandHistory[currentHistoryIndex])
+							fmt.Fprint(out, string(cmdLine))
+						} else {
+							// Restore original command
+							currentHistoryIndex = -1
+							fmt.Fprint(out, "\r\033[K: ")
+							cmdLine = []byte(originalCmd)
+							fmt.Fprint(out, string(cmdLine))
+						}
+					}
+					continue
+				case 'C': // Right arrow
+					continue
+				case 'D': // Left arrow
+					continue
+				}
+			}
+			continue
+		}
+		
 		if b == '\r' || b == '\n' {
 			break
 		}
+		
+		if b == '\t' {
+			// Tab completion
+			currentCmd := string(cmdLine)
+			matches := findCommandMatches(currentCmd)
+			if len(matches) == 1 {
+				// Single match - complete it
+				completed := matches[0]
+				// Clear and rewrite
+				fmt.Fprint(out, "\r\033[K: ")
+				cmdLine = []byte(completed + " ")
+				fmt.Fprint(out, string(cmdLine))
+			} else if len(matches) > 1 {
+				// Multiple matches - show them
+				fmt.Fprint(out, "\r\n")
+				for _, match := range matches {
+					fmt.Fprintf(out, "%s ", match)
+				}
+				fmt.Fprint(out, "\r\n: ")
+				fmt.Fprint(out, string(cmdLine))
+			}
+			continue
+		}
+		
 		if b == '\b' || b == 0x7f {
 			// Backspace
 			if len(cmdLine) > 0 {
 				cmdLine = cmdLine[:len(cmdLine)-1]
 				fmt.Fprint(out, "\b \b")
 			}
+			currentHistoryIndex = -1 // Reset history navigation
 		} else if b >= 32 && b < 127 {
 			// Printable character
 			cmdLine = append(cmdLine, b)
 			fmt.Fprint(out, string(b))
+			currentHistoryIndex = -1 // Reset history navigation
 		}
 	}
 	
-	cmd := string(cmdLine)
+	cmd := strings.TrimSpace(string(cmdLine))
 	if cmd == "" {
 		return nil
 	}
 	
+	// Add to history (avoid duplicates)
+	if len(commandHistory) == 0 || commandHistory[len(commandHistory)-1] != cmd {
+		commandHistory = append(commandHistory, cmd)
+		if len(commandHistory) > maxHistory {
+			commandHistory = commandHistory[1:]
+		}
+	}
+	historyIndex = len(commandHistory)
+	
 	// Parse and execute command
-	return executeCommand(cmd, sess, config, scrollback)
+	return executeCommand(cmd, sess, config, scrollback, in, out)
+}
+
+// findCommandMatches finds commands that match the prefix
+func findCommandMatches(prefix string) []string {
+	matches := make([]string, 0)
+	prefixLower := strings.ToLower(prefix)
+	
+	for _, cmd := range availableCommands {
+		if strings.HasPrefix(strings.ToLower(cmd), prefixLower) {
+			matches = append(matches, cmd)
+		}
+	}
+	
+	return matches
 }
 
 // executeCommand executes a screen command
-func executeCommand(cmd string, sess *session.Session, config *AttachConfig, scrollback *ScrollbackBuffer) error {
+func executeCommand(cmd string, sess *session.Session, config *AttachConfig, scrollback *ScrollbackBuffer, in, out *os.File) error {
 	parts := strings.Fields(cmd)
 	if len(parts) == 0 {
 		return nil
@@ -182,6 +306,22 @@ func executeCommand(cmd string, sess *session.Session, config *AttachConfig, scr
 	case "quit", "exit":
 		// Exit all windows
 		return fmt.Errorf("quit")
+		
+	case "rename":
+		if len(args) > 0 {
+			newName := args[0]
+			if err := sess.Rename(newName); err != nil {
+				return fmt.Errorf("failed to rename session: %w", err)
+			}
+			fmt.Fprintf(out, "\r\nSession renamed to: %s\r\n", newName)
+			return nil
+		}
+		return fmt.Errorf("usage: rename <new-name>")
+		
+	case "lock":
+		// Lock screen (same as C-a x)
+		// lockScreen is defined in attach.go (same package)
+		return lockScreen(in, out)
 		
 	default:
 		return fmt.Errorf("unknown command: %s", command)
