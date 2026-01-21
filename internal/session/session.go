@@ -2,6 +2,7 @@ package session
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,25 +16,29 @@ import (
 
 // Config represents session configuration options
 type Config struct {
-	Term          string
-	UTF8          bool
-	Scrollback    int
+	Term            string
+	UTF8            bool
+	Scrollback      int
 	AllCapabilities bool
+	Encoding        string // Window encoding (e.g., UTF-8, ISO-8859-1)
 }
 
 // Session represents a screen session
 type Session struct {
-	ID        string    `json:"id"`
-	CmdPath   string    `json:"cmd_path"`
-	CmdArgs   []string  `json:"cmd_args"`
-	Pid       int       `json:"pid"`
-	PtsPath   string    `json:"pts_path,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
+	ID           string         `json:"id"`
+	CmdPath      string         `json:"cmd_path"`
+	CmdArgs      []string       `json:"cmd_args"`
+	Pid          int            `json:"pid"`
+	PtsPath      string         `json:"pts_path,omitempty"`
+	CreatedAt    time.Time      `json:"created_at"`
+	Owner        string         `json:"owner,omitempty"`
+	AllowedUsers []string       `json:"allowed_users,omitempty"`
+	Layouts      map[string]int `json:"layouts,omitempty"`
 
 	// Window management
-	Windows     []*Window `json:"windows,omitempty"`     // All windows in this session
-	CurrentWindow int     `json:"current_window"`        // Index of current window
-	LastWindow    int     `json:"last_window,omitempty"` // Index of last window (for C-a C-a)
+	Windows       []*Window `json:"windows,omitempty"`     // All windows in this session
+	CurrentWindow int       `json:"current_window"`        // Index of current window
+	LastWindow    int       `json:"last_window,omitempty"` // Index of last window (for C-a C-a)
 
 	// Runtime fields (not persisted)
 	PTYProcess *pty.PTYProcess `json:"-"` // Deprecated: use Windows[CurrentWindow] instead
@@ -55,6 +60,17 @@ func init() {
 	os.MkdirAll(sessionsDir, 0755)
 }
 
+// CurrentUser returns the current username for permission checks.
+func CurrentUser() string {
+	if user := os.Getenv("USER"); user != "" {
+		return user
+	}
+	if user := os.Getenv("USERNAME"); user != "" {
+		return user
+	}
+	return ""
+}
+
 // New creates a new session with the given ID, command, and arguments
 func New(id, cmdPath string, args []string) (*Session, error) {
 	return NewWithConfig(id, cmdPath, args, nil)
@@ -71,7 +87,7 @@ func NewWithConfig(id, cmdPath string, args []string, config *Config) (*Session,
 			return nil, fmt.Errorf("invalid session name: only alphanumeric characters, dash, and underscore allowed")
 		}
 	}
-	
+
 	sessionsMu.Lock()
 	defer sessionsMu.Unlock()
 
@@ -90,7 +106,7 @@ func NewWithConfig(id, cmdPath string, args []string, config *Config) (*Session,
 			// Default to screen, or screen-256color if all capabilities requested
 			envOverrides["TERM"] = "screen"
 		}
-		
+
 		// Set UTF-8 locale if UTF-8 mode is enabled
 		if config.UTF8 {
 			if locale := os.Getenv("LANG"); locale != "" {
@@ -103,7 +119,7 @@ func NewWithConfig(id, cmdPath string, args []string, config *Config) (*Session,
 				envOverrides["LANG"] = "en_US.UTF-8"
 			}
 		}
-		
+
 		// Set SCREENCAP if all capabilities requested
 		// This tells screen to include all capabilities even if terminal lacks them
 		// For sgreen, we set a flag that can be used later
@@ -124,22 +140,36 @@ func NewWithConfig(id, cmdPath string, args []string, config *Config) (*Session,
 		return nil, fmt.Errorf("failed to start PTY: %w", err)
 	}
 
+	// Determine encoding for the window
+	encoding := ""
+	if config != nil {
+		if config.Encoding != "" {
+			encoding = config.Encoding
+		} else if config.UTF8 {
+			encoding = "UTF-8"
+		}
+	}
+	if encoding == "" {
+		encoding = detectEncodingFromLocale()
+	}
+
 	// Create first window
 	scrollbackSize := 1000 // Default
 	if config != nil && config.Scrollback > 0 {
 		scrollbackSize = config.Scrollback
 	}
 	window := &Window{
-		ID:            0,
-		Number:        "0",
-		Title:         "",
-		CmdPath:       cmdPath,
-		CmdArgs:       args,
-		Pid:           ptyProc.Cmd.Process.Pid,
-		PtsPath:       ptyProc.PtsPath,
-		CreatedAt:     time.Now(),
+		ID:             0,
+		Number:         "0",
+		Title:          "",
+		CmdPath:        cmdPath,
+		CmdArgs:        args,
+		Pid:            ptyProc.Cmd.Process.Pid,
+		PtsPath:        ptyProc.PtsPath,
+		CreatedAt:      time.Now(),
 		ScrollbackSize: scrollbackSize,
-		PTYProcess:    ptyProc,
+		Encoding:       encoding,
+		PTYProcess:     ptyProc,
 	}
 
 	// Create session
@@ -150,6 +180,7 @@ func NewWithConfig(id, cmdPath string, args []string, config *Config) (*Session,
 		Pid:           ptyProc.Cmd.Process.Pid,
 		PtsPath:       ptyProc.PtsPath, // Store PTY path for reconnection (backward compat)
 		CreatedAt:     time.Now(),
+		Owner:         CurrentUser(),
 		Windows:       []*Window{window},
 		CurrentWindow: 0,
 		LastWindow:    0,
@@ -238,11 +269,53 @@ func isProcessAlive(pid int) bool {
 	if err != nil {
 		return false
 	}
-	
+
 	// Send signal 0 to check if process exists
 	// This doesn't actually send a signal, just checks if the process exists
 	err = process.Signal(os.Signal(syscall.Signal(0)))
 	return err == nil
+}
+
+// detectEncodingFromLocale detects encoding from locale environment variables.
+func detectEncodingFromLocale() string {
+	for _, key := range []string{"LC_ALL", "LC_CTYPE", "LANG"} {
+		locale := os.Getenv(key)
+		if locale == "" {
+			continue
+		}
+		parts := strings.Split(locale, ".")
+		if len(parts) < 2 {
+			continue
+		}
+		encoding := strings.ToUpper(parts[1])
+		encoding = strings.ReplaceAll(encoding, "_", "-")
+		switch encoding {
+		case "UTF-8", "UTF8":
+			return "UTF-8"
+		case "ISO-8859-1", "ISO8859-1", "LATIN1":
+			return "ISO-8859-1"
+		case "ISO-8859-2", "ISO8859-2", "LATIN2":
+			return "ISO-8859-2"
+		case "ISO-8859-15", "ISO8859-15", "LATIN9":
+			return "ISO-8859-15"
+		case "WINDOWS-1252", "CP1252":
+			return "WINDOWS-1252"
+		case "WINDOWS-1251", "CP1251":
+			return "WINDOWS-1251"
+		case "KOI8-R", "KOI8R":
+			return "KOI8-R"
+		case "KOI8-U", "KOI8U":
+			return "KOI8-U"
+		}
+	}
+	return "UTF-8"
+}
+
+func isResourceExhausted(err error) bool {
+	if err == nil {
+		return false
+	}
+	return errors.Is(err, syscall.ENOSPC) || errors.Is(err, syscall.EMFILE) || errors.Is(err, syscall.ENFILE)
 }
 
 // List returns all active sessions (from both memory and disk)
@@ -359,12 +432,38 @@ func (s *Session) save() error {
 	defer s.mu.RUnlock()
 
 	filePath := filepath.Join(sessionsDir, s.ID+".json")
-	data, err := json.MarshalIndent(s, "", "  ")
-	if err != nil {
-		return err
+	// Ensure sessions directory exists
+	if err := os.MkdirAll(sessionsDir, 0755); err != nil {
+		if isResourceExhausted(err) {
+			return fmt.Errorf("resource exhaustion while creating sessions directory: %w", err)
+		}
+		return fmt.Errorf("failed to create sessions directory: %w", err)
 	}
 
-	return os.WriteFile(filePath, data, 0644)
+	data, err := json.MarshalIndent(s, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal session: %w", err)
+	}
+
+	// Write to temporary file first, then rename (atomic operation)
+	tmpPath := filePath + ".tmp"
+	if err := os.WriteFile(tmpPath, data, 0644); err != nil {
+		if isResourceExhausted(err) {
+			return fmt.Errorf("resource exhaustion while writing session file: %w", err)
+		}
+		return fmt.Errorf("failed to write session file: %w", err)
+	}
+
+	// Atomic rename
+	if err := os.Rename(tmpPath, filePath); err != nil {
+		os.Remove(tmpPath)
+		if isResourceExhausted(err) {
+			return fmt.Errorf("resource exhaustion while renaming session file: %w", err)
+		}
+		return fmt.Errorf("failed to rename session file: %w", err)
+	}
+
+	return nil
 }
 
 // loadFromDisk loads a session from disk
@@ -372,12 +471,30 @@ func loadFromDisk(id string) (*Session, error) {
 	filePath := filepath.Join(sessionsDir, id+".json")
 	data, err := os.ReadFile(filePath)
 	if err != nil {
-		return nil, fmt.Errorf("session %s not found", id)
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("session %s not found", id)
+		}
+		return nil, fmt.Errorf("failed to read session file: %w", err)
 	}
 
 	var sess Session
 	if err := json.Unmarshal(data, &sess); err != nil {
-		return nil, fmt.Errorf("failed to parse session file: %w", err)
+		// Try to recover by backing up corrupted file
+		backupPath := filePath + ".corrupted"
+		os.WriteFile(backupPath, data, 0644) // Ignore errors
+		return nil, fmt.Errorf("failed to parse session file (backed up to %s): %w", backupPath, err)
+	}
+
+	// Validate session structure
+	if sess.ID == "" {
+		return nil, fmt.Errorf("invalid session: missing ID")
+	}
+	if sess.ID != id {
+		// ID mismatch, fix it
+		sess.ID = id
+	}
+	if sess.Owner == "" {
+		sess.Owner = CurrentUser()
 	}
 
 	return &sess, nil
@@ -393,7 +510,14 @@ func Delete(id string) error {
 		return fmt.Errorf("session %s not found", id)
 	}
 
-	// Kill the process if it's still running
+	// Kill all processes in all windows
+	for _, win := range sess.Windows {
+		if win.GetPTYProcess() != nil {
+			win.GetPTYProcess().Kill()
+		}
+	}
+
+	// Also kill legacy PTY process if exists
 	if sess.PTYProcess != nil {
 		sess.PTYProcess.Kill()
 	}
@@ -403,9 +527,83 @@ func Delete(id string) error {
 
 	// Remove from disk
 	filePath := filepath.Join(sessionsDir, id+".json")
-	os.Remove(filePath)
+	if err := os.Remove(filePath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("failed to remove session file: %w", err)
+	}
 
 	return nil
+}
+
+// CleanupOrphanedProcesses cleans up orphaned processes from dead sessions
+func CleanupOrphanedProcesses() error {
+	sessionsMu.Lock()
+	defer sessionsMu.Unlock()
+
+	// Get all sessions from disk
+	diskSessions, err := loadAllFromDisk()
+	if err != nil {
+		// If we can't read from disk, try to clean up from memory
+		for _, sess := range sessions {
+			cleanupSessionOrphans(sess)
+		}
+		return nil
+	}
+
+	// Check each session
+	for _, sess := range diskSessions {
+		// Check if session is in memory
+		if _, inMemory := sessions[sess.ID]; !inMemory {
+			// Session not in memory, check if processes are orphaned
+			hasAliveProcess := false
+
+			// Check windows
+			for _, win := range sess.Windows {
+				if win.PtsPath != "" && isProcessAlive(win.Pid) {
+					hasAliveProcess = true
+					// Try to kill orphaned process
+					if proc, err := os.FindProcess(win.Pid); err == nil {
+						proc.Kill()
+					}
+				}
+			}
+
+			// Check legacy PTY
+			if sess.PtsPath != "" && isProcessAlive(sess.Pid) {
+				hasAliveProcess = true
+				if proc, err := os.FindProcess(sess.Pid); err == nil {
+					proc.Kill()
+				}
+			}
+
+			// If no alive processes, remove session file
+			if !hasAliveProcess {
+				filePath := filepath.Join(sessionsDir, sess.ID+".json")
+				os.Remove(filePath) // Ignore errors
+			}
+		}
+	}
+
+	return nil
+}
+
+// cleanupSessionOrphans cleans up orphaned processes for a session
+func cleanupSessionOrphans(sess *Session) {
+	// Clean up dead windows
+	for _, win := range sess.Windows {
+		if win.GetPTYProcess() != nil && !win.GetPTYProcess().IsAlive() {
+			// Process is dead, try to kill it anyway to be sure
+			if proc, err := os.FindProcess(win.Pid); err == nil {
+				proc.Kill()
+			}
+		}
+	}
+
+	// Clean up legacy PTY
+	if sess.PTYProcess != nil && !sess.PTYProcess.IsAlive() {
+		if proc, err := os.FindProcess(sess.Pid); err == nil {
+			proc.Kill()
+		}
+	}
 }
 
 // GetPTYProcess returns the PTY process for this session
@@ -485,22 +683,36 @@ func (s *Session) CreateWindow(cmdPath string, args []string, config *Config) (*
 		return nil, fmt.Errorf("failed to start PTY: %w", err)
 	}
 
+	// Determine encoding for the window
+	encoding := ""
+	if config != nil {
+		if config.Encoding != "" {
+			encoding = config.Encoding
+		} else if config.UTF8 {
+			encoding = "UTF-8"
+		}
+	}
+	if encoding == "" {
+		encoding = detectEncodingFromLocale()
+	}
+
 	// Create window
 	scrollbackSize := 1000 // Default
 	if config != nil && config.Scrollback > 0 {
 		scrollbackSize = config.Scrollback
 	}
 	window := &Window{
-		ID:            nextID,
-		Number:        windowNumberToString(nextID),
-		Title:         "",
-		CmdPath:       cmdPath,
-		CmdArgs:       args,
-		Pid:           ptyProc.Cmd.Process.Pid,
-		PtsPath:       ptyProc.PtsPath,
-		CreatedAt:     time.Now(),
+		ID:             nextID,
+		Number:         windowNumberToString(nextID),
+		Title:          "",
+		CmdPath:        cmdPath,
+		CmdArgs:        args,
+		Pid:            ptyProc.Cmd.Process.Pid,
+		PtsPath:        ptyProc.PtsPath,
+		CreatedAt:      time.Now(),
 		ScrollbackSize: scrollbackSize,
-		PTYProcess:    ptyProc,
+		Encoding:       encoding,
+		PTYProcess:     ptyProc,
 	}
 
 	// Add to session
@@ -515,7 +727,7 @@ func (s *Session) CreateWindow(cmdPath string, args []string, config *Config) (*
 func (s *Session) SwitchToWindow(number string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	
+
 	id, err := windowStringToNumber(number)
 	if err != nil {
 		return err
@@ -529,7 +741,7 @@ func (s *Session) SwitchToWindow(number string) error {
 			break
 		}
 	}
-	
+
 	if foundIdx == -1 {
 		return fmt.Errorf("window %s not found", number)
 	}
@@ -575,7 +787,7 @@ func (s *Session) ToggleLastWindow() {
 func (s *Session) KillCurrentWindow() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	
+
 	if len(s.Windows) == 0 || s.CurrentWindow < 0 || s.CurrentWindow >= len(s.Windows) {
 		return fmt.Errorf("no current window")
 	}
@@ -592,7 +804,7 @@ func (s *Session) KillCurrentWindow() error {
 
 	// Remove window from list
 	s.Windows = append(s.Windows[:s.CurrentWindow], s.Windows[s.CurrentWindow+1:]...)
-	
+
 	// Renumber windows
 	for i, w := range s.Windows {
 		w.ID = i
@@ -626,17 +838,17 @@ func (s *Session) Rename(newID string) error {
 	if newID == "" {
 		return fmt.Errorf("session name cannot be empty")
 	}
-	
+
 	// Validate session name (alphanumeric, dash, underscore)
 	for _, r := range newID {
 		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_') {
 			return fmt.Errorf("invalid session name: only alphanumeric characters, dash, and underscore allowed")
 		}
 	}
-	
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	
+
 	// Check if new name already exists
 	sessionsMu.RLock()
 	if _, exists := sessions[newID]; exists {
@@ -644,18 +856,18 @@ func (s *Session) Rename(newID string) error {
 		return fmt.Errorf("session %s already exists", newID)
 	}
 	sessionsMu.RUnlock()
-	
+
 	oldID := s.ID
 	oldPath := filepath.Join(sessionsDir, oldID+".json")
 	newPath := filepath.Join(sessionsDir, newID+".json")
-	
+
 	// Update in-memory map
 	sessionsMu.Lock()
 	delete(sessions, oldID)
 	s.ID = newID
 	sessions[newID] = s
 	sessionsMu.Unlock()
-	
+
 	// Rename file on disk
 	if err := os.Rename(oldPath, newPath); err != nil {
 		// Rollback in-memory change
@@ -666,7 +878,7 @@ func (s *Session) Rename(newID string) error {
 		sessionsMu.Unlock()
 		return fmt.Errorf("failed to rename session file: %w", err)
 	}
-	
+
 	// Save updated session
 	return s.save()
 }
@@ -679,6 +891,110 @@ func (s *Session) ForceDetach() {
 	// Clear the PTY process reference but keep the session alive
 	// The process continues running, we just lose the reference
 	s.PTYProcess = nil
+}
+
+// Save persists session to disk.
+func (s *Session) Save() error {
+	return s.save()
+}
+
+// CanAttach checks if a user is allowed to attach to this session.
+func (s *Session) CanAttach(username string) bool {
+	if username == "" {
+		return false
+	}
+	// If no permissions set, allow all (backward compat).
+	if len(s.AllowedUsers) == 0 && s.Owner == "" {
+		return true
+	}
+	if s.Owner != "" && s.Owner == username {
+		return true
+	}
+	for _, u := range s.AllowedUsers {
+		if u == username {
+			return true
+		}
+	}
+	return false
+}
+
+// AddUser adds a user to the allowed list.
+func (s *Session) AddUser(username string) error {
+	if username == "" {
+		return fmt.Errorf("username cannot be empty")
+	}
+	for _, u := range s.AllowedUsers {
+		if u == username {
+			return nil
+		}
+	}
+	s.AllowedUsers = append(s.AllowedUsers, username)
+	return s.save()
+}
+
+// RemoveUser removes a user from the allowed list.
+func (s *Session) RemoveUser(username string) error {
+	if username == "" {
+		return fmt.Errorf("username cannot be empty")
+	}
+	updated := make([]string, 0, len(s.AllowedUsers))
+	for _, u := range s.AllowedUsers {
+		if u != username {
+			updated = append(updated, u)
+		}
+	}
+	s.AllowedUsers = updated
+	return s.save()
+}
+
+// SaveLayout stores the current window index under a layout name.
+func (s *Session) SaveLayout(name string) error {
+	if name == "" {
+		return fmt.Errorf("layout name cannot be empty")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.Layouts == nil {
+		s.Layouts = make(map[string]int)
+	}
+	s.Layouts[name] = s.CurrentWindow
+	return s.save()
+}
+
+// SelectLayout switches to the window saved under a layout name.
+func (s *Session) SelectLayout(name string) error {
+	if name == "" {
+		return fmt.Errorf("layout name cannot be empty")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.Layouts == nil {
+		return fmt.Errorf("no layouts available")
+	}
+	idx, ok := s.Layouts[name]
+	if !ok {
+		return fmt.Errorf("layout %s not found", name)
+	}
+	if idx < 0 || idx >= len(s.Windows) {
+		return fmt.Errorf("layout %s references invalid window", name)
+	}
+	s.LastWindow = s.CurrentWindow
+	s.CurrentWindow = idx
+	return s.save()
+}
+
+// ListLayouts returns layout names.
+func (s *Session) ListLayouts() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if len(s.Layouts) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(s.Layouts))
+	for name := range s.Layouts {
+		names = append(names, name)
+	}
+	return names
 }
 
 // ExecuteCommand executes a command in a session
@@ -710,4 +1026,3 @@ func ExecuteCommand(sess *Session, command string) error {
 		return fmt.Errorf("unknown command: %s", cmd)
 	}
 }
-

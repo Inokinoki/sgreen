@@ -16,80 +16,81 @@ import (
 
 // Config holds configuration options from command-line flags
 type Config struct {
-	Shell          string
-	Term           string
-	UTF8           bool
+	Shell           string
+	Term            string
+	UTF8            bool
+	Encoding        string
 	AllCapabilities bool
-	AdaptSize      bool
-	Quiet          bool
-	Logging        bool
-	Logfile        string
-	Scrollback     int
-	CommandChar    string
-	LiteralChar    string
-	ConfigFile     string
-	IgnoreSTY      bool
-	OptimalOutput  bool
+	AdaptSize       bool
+	Quiet           bool
+	Logging         bool
+	Logfile         string
+	Scrollback      int
+	CommandChar     string
+	LiteralChar     string
+	ConfigFile      string
+	IgnoreSTY       bool
+	OptimalOutput   bool
 	PreselectWindow string
-	Wipe           bool
-	Version        bool
-	SendCommand    string
-	Multiuser      bool
-	FlowControl    string // "on", "off", "auto"
-	Interrupt      bool
-	StartupMessage bool
-	Bell           bool
-	VBell          bool
-		ActivityMsg    string
-		SilenceMsg     string
-		SilenceTimeout int
-		Bindings       map[string]string // Key bindings from config file
-		Hardstatus     string            // Hardstatus line configuration
-		Caption        string            // Caption line configuration
-		ShellTitle     string            // Shell title format
-	}
+	Wipe            bool
+	Version         bool
+	SendCommand     string
+	Multiuser       bool
+	FlowControl     string // "on", "off", "auto"
+	Interrupt       bool
+	StartupMessage  bool
+	Bell            bool
+	VBell           bool
+	ActivityMsg     string
+	SilenceMsg      string
+	SilenceTimeout  int
+	Bindings        map[string]string // Key bindings from config file
+	Hardstatus      string            // Hardstatus line configuration
+	Caption         string            // Caption line configuration
+	ShellTitle      string            // Shell title format
+}
 
 func main() {
 	// Parse flags
 	var (
-		reattach         = flag.Bool("r", false, "Reattach to a detached session")
-		reattachOrCreate = flag.Bool("R", false, "Reattach or create if none exists")
+		reattach           = flag.Bool("r", false, "Reattach to a detached session")
+		reattachOrCreate   = flag.Bool("R", false, "Reattach or create if none exists")
 		reattachOrCreateRR = flag.Bool("RR", false, "Reattach or create, detaching elsewhere if needed")
-		powerDetach      = flag.Bool("D", false, "Power detach (force detach from elsewhere)")
-		detach           = flag.Bool("d", false, "Detach a session")
-		list             = flag.Bool("ls", false, "List all sessions")
-		listAlt          = flag.Bool("list", false, "List all sessions (alternative)")
-		sessionName      = flag.String("S", "", "Name the session")
-		help             = flag.Bool("h", false, "Show help")
-		helpLong         = flag.Bool("help", false, "Show help")
-		
+		powerDetach        = flag.Bool("D", false, "Power detach (force detach from elsewhere)")
+		detach             = flag.Bool("d", false, "Detach a session")
+		list               = flag.Bool("ls", false, "List all sessions")
+		listAlt            = flag.Bool("list", false, "List all sessions (alternative)")
+		sessionName        = flag.String("S", "", "Name the session")
+		help               = flag.Bool("h", false, "Show help")
+		helpLong           = flag.Bool("help", false, "Show help")
+
 		// Session Configuration
-		shell            = flag.String("s", "", "Shell program (default: /bin/sh or $SHELL)")
-		configFile       = flag.String("c", "", "Config file instead of default .screenrc")
-		escapeChars      = flag.String("e", "", "Command character and literal escape (default: ^Aa)")
-		term             = flag.String("T", "", "Set TERM environment variable")
-		utf8             = flag.Bool("U", false, "UTF-8 mode")
-		allCapabilities  = flag.Bool("a", false, "Include all capabilities in termcap")
-		adaptSize        = flag.Bool("A", false, "Adapt window sizes to new terminal size on attach")
-		
+		shell           = flag.String("s", "", "Shell program (default: /bin/sh or $SHELL)")
+		configFile      = flag.String("c", "", "Config file instead of default .screenrc")
+		escapeChars     = flag.String("e", "", "Command character and literal escape (default: ^Aa)")
+		term            = flag.String("T", "", "Set TERM environment variable")
+		utf8            = flag.Bool("U", false, "UTF-8 mode")
+		allCapabilities = flag.Bool("a", false, "Include all capabilities in termcap")
+		adaptSize       = flag.Bool("A", false, "Adapt window sizes to new terminal size on attach")
+
 		// Output and Logging
-		logging          = flag.Bool("L", false, "Turn on output logging for windows")
-		logfile          = flag.String("Logfile", "", "Log output to file")
-		scrollback       = flag.Int("H", 0, "Set scrollback buffer size (screen uses -h, but conflicts with help)")
-		
+		logging    = flag.Bool("L", false, "Turn on output logging for windows")
+		logfile    = flag.String("Logfile", "", "Log output to file")
+		scrollback = flag.Int("H", 0, "Set scrollback buffer size (screen uses -h, but conflicts with help)")
+
 		// Other Options
-		version          = flag.Bool("v", false, "Print version information")
-		wipe             = flag.Bool("wipe", false, "Remove dead sessions from list")
-		sendCommand      = flag.String("X", "", "Send command to a running session")
-		ignoreSTY        = flag.Bool("m", false, "Ignore $STY environment variable")
-		optimalOutput    = flag.Bool("O", false, "Use optimal output mode")
-		preselectWindow  = flag.String("p", "", "Preselect a window")
-		quiet            = flag.Bool("q", false, "Quiet startup (suppress messages)")
-		interrupt        = flag.Bool("i", false, "Interrupt output immediately when flow control is on")
-		flowControl      = flag.String("f", "", "Flow control: on, off, or auto")
-		flowControlOff   = flag.Bool("fn", false, "Flow control off")
-		flowControlAuto  = flag.Bool("fa", false, "Flow control automatic")
-		multiuser        = flag.Bool("x", false, "Attach to a session without detaching it (multiuser)")
+		version         = flag.Bool("v", false, "Print version information")
+		wipe            = flag.Bool("wipe", false, "Remove dead sessions from list")
+		sendCommand     = flag.String("X", "", "Send command to a running session")
+		ignoreSTY       = flag.Bool("m", false, "Ignore $STY environment variable")
+		optimalOutput   = flag.Bool("O", false, "Use optimal output mode")
+		preselectWindow = flag.String("p", "", "Preselect a window")
+		quiet           = flag.Bool("q", false, "Quiet startup (suppress messages)")
+		interrupt       = flag.Bool("i", false, "Interrupt output immediately when flow control is on")
+		flowControl     = flag.String("f", "", "Flow control: on, off, or auto")
+		flowControlOff  = flag.Bool("fn", false, "Flow control off")
+		flowControlAuto = flag.Bool("fa", false, "Flow control automatic")
+		multiuser       = flag.Bool("x", false, "Attach to a session without detaching it (multiuser)")
 	)
 
 	flag.Usage = printUsage
@@ -97,30 +98,31 @@ func main() {
 
 	// Build config from flags
 	config := &Config{
-		Shell:          *shell,
-		Term:           *term,
-		UTF8:           *utf8,
+		Shell:           *shell,
+		Term:            *term,
+		UTF8:            *utf8,
+		Encoding:        detectEncodingFromLocale(*utf8),
 		AllCapabilities: *allCapabilities,
-		AdaptSize:      *adaptSize,
-		Quiet:          *quiet,
-		Logging:        *logging,
-		Logfile:        *logfile,
-		Scrollback:     *scrollback,
-		CommandChar:    "",
-		LiteralChar:    "",
-		ConfigFile:     *configFile,
-		IgnoreSTY:      *ignoreSTY,
-		OptimalOutput:  *optimalOutput,
+		AdaptSize:       *adaptSize,
+		Quiet:           *quiet,
+		Logging:         *logging,
+		Logfile:         *logfile,
+		Scrollback:      *scrollback,
+		CommandChar:     "",
+		LiteralChar:     "",
+		ConfigFile:      *configFile,
+		IgnoreSTY:       *ignoreSTY,
+		OptimalOutput:   *optimalOutput,
 		PreselectWindow: *preselectWindow,
-		Wipe:           *wipe,
-		Version:        *version,
-		SendCommand:    *sendCommand,
-		Multiuser:      *multiuser,
-		FlowControl:    *flowControl,
-		Interrupt:      *interrupt,
-		Bindings:       make(map[string]string),
+		Wipe:            *wipe,
+		Version:         *version,
+		SendCommand:     *sendCommand,
+		Multiuser:       *multiuser,
+		FlowControl:     *flowControl,
+		Interrupt:       *interrupt,
+		Bindings:        make(map[string]string),
 	}
-	
+
 	// Handle -fn and -fa flags (screen-compatible)
 	// These take precedence over -f value
 	if *flowControlOff {
@@ -208,7 +210,7 @@ func main() {
 		handleReattachWithConfig(*sessionName, config)
 		return
 	}
-	
+
 	// Handle multiuser attach (-x)
 	if *multiuser {
 		config.Multiuser = true
@@ -229,13 +231,18 @@ func printVersion() {
 
 // handleWipe removes dead sessions from the list
 func handleWipe() {
+	// First, clean up orphaned processes
+	if err := session.CleanupOrphanedProcesses(); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to cleanup orphaned processes: %v\n", err)
+	}
+
 	sessions := session.List()
 	removed := 0
-	
+
 	for _, sess := range sessions {
 		// Check if session is dead
 		isDead := false
-		
+
 		// Check all windows in the session
 		if len(sess.Windows) > 0 {
 			allWindowsDead := true
@@ -268,7 +275,7 @@ func handleWipe() {
 				}
 			}
 		}
-		
+
 		if isDead {
 			// Session is dead, remove it
 			if err := session.Delete(sess.ID); err == nil {
@@ -276,7 +283,7 @@ func handleWipe() {
 			}
 		}
 	}
-	
+
 	if removed > 0 {
 		fmt.Printf("Removed %d dead session(s)\n", removed)
 	} else {
@@ -288,14 +295,14 @@ func handleWipe() {
 func handleSendCommand(sessionName, command string) {
 	var sess *session.Session
 	var err error
-	
+
 	if sessionName != "" {
 		sess, err = session.Load(sessionName)
 	} else {
 		sessions := session.List()
 		if len(sessions) == 0 {
 			fmt.Fprintf(os.Stderr, "No screen session found.\n")
-		os.Exit(1)
+			os.Exit(1)
 		}
 		sess = sessions[0]
 	}
@@ -374,6 +381,13 @@ func handleNew(sessionName string, cmdArgs []string, config *Config) {
 	if configFile != "" {
 		loadConfigFile(configFile, config)
 	}
+	if config != nil {
+		if config.UTF8 {
+			config.Encoding = "UTF-8"
+		} else if config.Encoding == "" {
+			config.Encoding = detectEncodingFromLocale(false)
+		}
+	}
 
 	// Handle window preselection (-p)
 	// Note: This is a placeholder for when multiple windows are implemented
@@ -396,9 +410,10 @@ func handleNew(sessionName string, cmdArgs []string, config *Config) {
 
 	// Create new session with config
 	sessConfig := &session.Config{
-		Term:           config.Term,
-		UTF8:           config.UTF8,
-		Scrollback:     config.Scrollback,
+		Term:            config.Term,
+		UTF8:            config.UTF8,
+		Encoding:        config.Encoding,
+		Scrollback:      config.Scrollback,
 		AllCapabilities: config.AllCapabilities,
 	}
 	sess, err := session.NewWithConfig(sessionName, cmdPath, args, sessConfig)
@@ -632,6 +647,15 @@ func handleDetach(reattach bool, sessionName string) {
 
 // attachToSession attaches to a session
 func attachToSession(sess *session.Session, config *Config) {
+	// Permission check for multi-user sessions
+	if sess.Owner != "" || len(sess.AllowedUsers) > 0 {
+		user := session.CurrentUser()
+		if !sess.CanAttach(user) {
+			fmt.Fprintf(os.Stderr, "Permission denied: user %s is not allowed to attach to session %s\n", user, sess.ID)
+			os.Exit(1)
+		}
+	}
+
 	// Check if PTY process is available, try to reconnect if needed
 	if sess.GetPTYProcess() == nil {
 		// Try to reconnect if we have a pts path
@@ -677,6 +701,8 @@ func attachToSession(sess *session.Session, config *Config) {
 		}
 		attachConfig.Interrupt = config.Interrupt
 		attachConfig.Term = config.Term
+		attachConfig.UTF8 = config.UTF8
+		attachConfig.Encoding = config.Encoding
 		attachConfig.Scrollback = config.Scrollback
 		// Enable status line if hardstatus or caption is configured
 		if config.Hardstatus != "" {
@@ -720,7 +746,7 @@ func parseCommandChar(s string) byte {
 	if len(s) == 0 {
 		return 0x01 // Default: Ctrl+A
 	}
-	
+
 	// Handle caret notation (^A)
 	if len(s) >= 2 && s[0] == '^' {
 		char := s[1]
@@ -731,20 +757,58 @@ func parseCommandChar(s string) byte {
 			return char - 'a' + 1
 		}
 	}
-	
+
 	// Handle hex notation (\x01)
 	if len(s) >= 4 && s[0:2] == "\\x" {
 		var val byte
 		fmt.Sscanf(s[2:], "%x", &val)
 		return val
 	}
-	
+
 	// Single character
 	if len(s) == 1 {
 		return s[0]
 	}
-	
+
 	return 0x01 // Default
+}
+
+// detectEncodingFromLocale detects encoding from locale environment variables.
+func detectEncodingFromLocale(forceUTF8 bool) string {
+	if forceUTF8 {
+		return "UTF-8"
+	}
+	for _, key := range []string{"LC_ALL", "LC_CTYPE", "LANG"} {
+		locale := os.Getenv(key)
+		if locale == "" {
+			continue
+		}
+		parts := strings.Split(locale, ".")
+		if len(parts) < 2 {
+			continue
+		}
+		encoding := strings.ToUpper(parts[1])
+		encoding = strings.ReplaceAll(encoding, "_", "-")
+		switch encoding {
+		case "UTF-8", "UTF8":
+			return "UTF-8"
+		case "ISO-8859-1", "ISO8859-1", "LATIN1":
+			return "ISO-8859-1"
+		case "ISO-8859-2", "ISO8859-2", "LATIN2":
+			return "ISO-8859-2"
+		case "ISO-8859-15", "ISO8859-15", "LATIN9":
+			return "ISO-8859-15"
+		case "WINDOWS-1252", "CP1252":
+			return "WINDOWS-1252"
+		case "WINDOWS-1251", "CP1251":
+			return "WINDOWS-1251"
+		case "KOI8-R", "KOI8R":
+			return "KOI8-R"
+		case "KOI8-U", "KOI8U":
+			return "KOI8-U"
+		}
+	}
+	return "UTF-8"
 }
 
 // handleList lists all sessions
@@ -864,7 +928,7 @@ func loadConfigFile(configFile string, config *Config) {
 		}
 		return
 	}
-	
+
 	// Read and parse config file
 	data, err := os.ReadFile(configFile)
 	if err != nil {
@@ -873,15 +937,15 @@ func loadConfigFile(configFile string, config *Config) {
 		}
 		return
 	}
-	
+
 	// Parse config file with enhanced parser
 	lines := strings.Split(string(data), "\n")
 	processedFiles := make(map[string]bool)
 	baseDir := filepath.Dir(configFile)
-	
+
 	for i, line := range lines {
 		line = strings.TrimSpace(line)
-		
+
 		// Skip comments and empty lines
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
@@ -895,12 +959,12 @@ func loadConfigFile(configFile string, config *Config) {
 				line = line + " " + nextLine
 			}
 		}
-		
+
 		parts := strings.Fields(line)
 		if len(parts) == 0 {
 			continue
 		}
-		
+
 		directive := parts[0]
 		args := parts[1:]
 
@@ -912,7 +976,7 @@ func loadConfigFile(configFile string, config *Config) {
 				if !filepath.IsAbs(sourceFile) {
 					sourceFile = filepath.Join(baseDir, sourceFile)
 				}
-				
+
 				if processedFiles[sourceFile] {
 					continue
 				}

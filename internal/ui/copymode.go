@@ -21,6 +21,10 @@ type CopyMode struct {
 	currentCol  int
 	selecting   bool
 	selected    bool
+	searchMode  bool
+	searchTerm  string
+	searchResults []int // Line numbers matching search
+	searchIndex int    // Current search result index
 }
 
 // PasteBuffer holds the paste buffer content
@@ -74,6 +78,10 @@ func EnterCopyMode(win *session.Window, termFile *os.File, scrollback *Scrollbac
 		currentCol: 0,
 		selecting:  false,
 		selected:   false,
+		searchMode: false,
+		searchTerm: "",
+		searchResults: make([]int, 0),
+		searchIndex: 0,
 	}
 
 	// Enter copy mode loop
@@ -83,9 +91,11 @@ func EnterCopyMode(win *session.Window, termFile *os.File, scrollback *Scrollbac
 // run executes the copy mode interaction loop
 func (cm *CopyMode) run(termFile *os.File) error {
 	// Display copy mode prompt
-	fmt.Fprint(termFile, "\r\n[Copy mode - Use arrow keys to navigate, Space to mark, Enter to copy, q to quit]\r\n")
+	fmt.Fprint(termFile, "\r\n[Copy mode - Use arrow keys to navigate, Space to mark, Enter to copy, / to search, q to quit]\r\n")
 
 	buf := make([]byte, 1)
+	searchInput := make([]byte, 0, 256)
+	
 	for {
 		n, err := termFile.Read(buf)
 		if err != nil || n == 0 {
@@ -93,6 +103,36 @@ func (cm *CopyMode) run(termFile *os.File) error {
 		}
 
 		key := buf[0]
+		
+		// Handle search mode
+		if cm.searchMode {
+			if key == '\r' || key == '\n' {
+				// Execute search
+				cm.executeSearch(string(searchInput))
+				cm.searchMode = false
+				searchInput = searchInput[:0]
+				cm.updateDisplay(termFile)
+				continue
+			} else if key == 0x1b || key == 0x03 { // ESC or Ctrl+C
+				// Cancel search
+				cm.searchMode = false
+				searchInput = searchInput[:0]
+				cm.updateDisplay(termFile)
+				continue
+			} else if key == '\b' || key == 0x7f {
+				// Backspace in search
+				if len(searchInput) > 0 {
+					searchInput = searchInput[:len(searchInput)-1]
+					fmt.Fprint(termFile, "\b \b")
+				}
+				continue
+			} else if key >= 32 && key < 127 {
+				// Add to search input
+				searchInput = append(searchInput, key)
+				fmt.Fprint(termFile, string(key))
+				continue
+			}
+		}
 
 		// Handle escape sequences (arrow keys, etc.)
 		if key == 0x1b { // ESC
@@ -130,6 +170,19 @@ func (cm *CopyMode) run(termFile *os.File) error {
 		case 'q', 'Q':
 			// Quit copy mode
 			return nil
+		case '/':
+			// Enter search mode
+			cm.searchMode = true
+			searchInput = searchInput[:0]
+			fmt.Fprint(termFile, "\r\nSearch: ")
+			continue
+		case 'n', 'N':
+			// Next search result
+			if len(cm.searchResults) > 0 {
+				cm.searchIndex = (cm.searchIndex + 1) % len(cm.searchResults)
+				cm.currentLine = cm.searchResults[cm.searchIndex]
+				cm.currentCol = 0
+			}
 		case ' ':
 			// Mark start/end of selection
 			cm.toggleMark()
@@ -272,6 +325,55 @@ func (cm *CopyMode) copySelection() {
 
 	// Set paste buffer
 	SetPasteBuffer(selectedText)
+}
+
+// executeSearch searches for the term in scrollback
+func (cm *CopyMode) executeSearch(term string) {
+	cm.searchTerm = term
+	cm.searchResults = make([]int, 0)
+	
+	if term == "" {
+		return
+	}
+	
+	// Search through all lines in scrollback
+	for i := 0; i < cm.buffer.Size(); i++ {
+		line := cm.buffer.GetLine(i)
+		if len(line) > 0 {
+			// Simple case-insensitive search
+			lineLower := ""
+			for _, r := range line {
+				if r >= 'A' && r <= 'Z' {
+					lineLower += string(r + 32)
+				} else {
+					lineLower += string(r)
+				}
+			}
+			termLower := ""
+			for _, r := range term {
+				if r >= 'A' && r <= 'Z' {
+					termLower += string(r + 32)
+				} else {
+					termLower += string(r)
+				}
+			}
+			
+			// Check if line contains search term
+			for j := 0; j <= len(lineLower)-len(termLower); j++ {
+				if lineLower[j:j+len(termLower)] == termLower {
+					cm.searchResults = append(cm.searchResults, i)
+					break
+				}
+			}
+		}
+	}
+	
+	// Move to first result if any found
+	if len(cm.searchResults) > 0 {
+		cm.searchIndex = 0
+		cm.currentLine = cm.searchResults[0]
+		cm.currentCol = 0
+	}
 }
 
 // updateDisplay updates the copy mode display

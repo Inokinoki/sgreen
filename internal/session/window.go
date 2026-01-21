@@ -19,6 +19,7 @@ type Window struct {
 	PtsPath   string    `json:"pts_path,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 	ScrollbackSize int  `json:"scrollback_size,omitempty"` // Scrollback buffer size
+	Encoding       string `json:"encoding,omitempty"` // Window encoding (e.g., UTF-8, ISO-8859-1)
 
 	// Runtime fields (not persisted)
 	PTYProcess *pty.PTYProcess `json:"-"`

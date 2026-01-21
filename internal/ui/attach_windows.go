@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"sync"
@@ -58,6 +59,21 @@ func AttachWithConfig(in *os.File, out *os.File, errOut *os.File, sess *session.
 	}
 	defer term.Restore(int(in.Fd()), oldState)
 
+	// Detect terminal capabilities and enable features when supported
+	caps := DetectTerminalCapabilities()
+	if caps.SupportsAltScreen {
+		enableAltScreen(out)
+		defer disableAltScreen(out)
+	}
+	if caps.SupportsBracketedPaste {
+		enableBracketedPaste(out)
+		defer disableBracketedPaste(out)
+	}
+	if caps.SupportsMouse {
+		enableMouseTracking(out)
+		defer disableMouseTracking(out)
+	}
+
 	// Main attach loop - handles window switching (Windows version without SIGWINCH)
 	return attachLoopWindows(in, out, errOut, sess, config)
 }
@@ -73,7 +89,7 @@ func attachLoopWindows(in *os.File, out *os.File, errOut *os.File, sess *session
 		if win == nil {
 			return errors.New("no current window")
 		}
-		
+
 		ptyProc := win.GetPTYProcess()
 		if ptyProc == nil {
 			return errors.New("current window has no PTY process")
@@ -107,8 +123,11 @@ func attachLoopWindows(in *os.File, out *os.File, errOut *os.File, sess *session
 		}
 		outputWriter := createOutputWriterForWindow(out, config, win, logDir)
 
+		// Apply encoding conversion for this window if needed
+		encodedOutput := wrapEncodingWriter(outputWriter, win.Encoding)
+
 		// Wrap output writer to also write to scrollback
-		scrollbackWriter := io.MultiWriter(outputWriter, &scrollbackWriter{scrollback: scrollback})
+		scrollbackWriter := io.MultiWriter(encodedOutput, &scrollbackWriter{scrollback: scrollback})
 
 		// Apply output optimization if requested
 		if config.OptimalOutput {
@@ -146,7 +165,7 @@ func attachLoopWindows(in *os.File, out *os.File, errOut *os.File, sess *session
 				// User detached, this is normal
 				return nil
 			}
-			
+
 			// Check if it's a window command
 			var winCmd *ErrWindowCommand
 			if errors.As(err, &winCmd) {
@@ -159,26 +178,151 @@ func attachLoopWindows(in *os.File, out *os.File, errOut *os.File, sess *session
 				// Window switched, restart the loop
 				continue
 			}
-			
+
 			// Other error
-			return err
-			
+			return wrapIOError(err)
+
 		case err := <-outputDone:
 			// Output finished (EOF or error)
 			if err == io.EOF {
 				// PTY closed, try to continue with next window or exit
 				return nil
 			}
-			return err
+			return wrapIOError(err)
 		}
 	}
 }
 
+const (
+	maxOutputChunkSize = 32 * 1024   // 32KB chunks
+	maxOutputRateBytes = 1024 * 1024 // 1MB/s
+)
+
+// chunkedWriter limits write size to avoid large buffer spikes
+type chunkedWriter struct {
+	w         io.Writer
+	chunkSize int
+}
+
+func (cw *chunkedWriter) Write(p []byte) (int, error) {
+	if cw.chunkSize <= 0 {
+		return cw.w.Write(p)
+	}
+	total := 0
+	for len(p) > 0 {
+		n := len(p)
+		if n > cw.chunkSize {
+			n = cw.chunkSize
+		}
+		written, err := cw.w.Write(p[:n])
+		total += written
+		if err != nil {
+			return total, err
+		}
+		p = p[n:]
+	}
+	return total, nil
+}
+
+// rateLimitedWriter throttles output to avoid overwhelming the terminal
+type rateLimitedWriter struct {
+	w           io.Writer
+	bytesPerSec int
+	lastWrite   time.Time
+	mu          sync.Mutex
+}
+
+func (rlw *rateLimitedWriter) Write(p []byte) (int, error) {
+	rlw.mu.Lock()
+	defer rlw.mu.Unlock()
+
+	if rlw.bytesPerSec <= 0 {
+		return rlw.w.Write(p)
+	}
+	if rlw.lastWrite.IsZero() {
+		rlw.lastWrite = time.Now()
+	}
+
+	n, err := rlw.w.Write(p)
+	if n > 0 {
+		expected := time.Duration(int64(n) * int64(time.Second) / int64(rlw.bytesPerSec))
+		elapsed := time.Since(rlw.lastWrite)
+		if expected > elapsed {
+			time.Sleep(expected - elapsed)
+		}
+		rlw.lastWrite = time.Now()
+	}
+	return n, err
+}
+
 // createOptimalWriter creates an optimized output writer
 func createOptimalWriter(w io.Writer) io.Writer {
-	// For optimal output, we can add buffering or other optimizations
-	// For now, return the writer as-is
-	return w
+	// Limit chunk size and throttle output rate to avoid buffer overflows
+	cw := &chunkedWriter{w: w, chunkSize: maxOutputChunkSize}
+	return &rateLimitedWriter{w: cw, bytesPerSec: maxOutputRateBytes}
+}
+
+func hexByte(a, b byte) (byte, bool) {
+	hi := hexValue(a)
+	lo := hexValue(b)
+	if hi < 0 || lo < 0 {
+		return 0, false
+	}
+	return byte((hi << 4) | lo), true
+}
+
+func wrapIOError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if ne, ok := err.(net.Error); ok {
+		return fmt.Errorf("network error: %w", ne)
+	}
+	return err
+}
+
+func hexValue(b byte) int {
+	switch {
+	case b >= '0' && b <= '9':
+		return int(b - '0')
+	case b >= 'a' && b <= 'f':
+		return int(b - 'a' + 10)
+	case b >= 'A' && b <= 'F':
+		return int(b - 'A' + 10)
+	default:
+		return -1
+	}
+}
+
+// enableBracketedPaste enables bracketed paste mode on the terminal.
+func enableBracketedPaste(out io.Writer) {
+	fmt.Fprint(out, "\x1b[?2004h")
+}
+
+// disableBracketedPaste disables bracketed paste mode on the terminal.
+func disableBracketedPaste(out io.Writer) {
+	fmt.Fprint(out, "\x1b[?2004l")
+}
+
+// enableAltScreen switches to the alternate screen buffer.
+func enableAltScreen(out io.Writer) {
+	fmt.Fprint(out, "\x1b[?1049h")
+}
+
+// disableAltScreen switches back to the normal screen buffer.
+func disableAltScreen(out io.Writer) {
+	fmt.Fprint(out, "\x1b[?1049l")
+}
+
+// enableMouseTracking enables basic mouse reporting.
+func enableMouseTracking(out io.Writer) {
+	// Enable X10 mouse reporting (press only).
+	fmt.Fprint(out, "\x1b[?1000h")
+}
+
+// disableMouseTracking disables mouse reporting.
+func disableMouseTracking(out io.Writer) {
+	fmt.Fprint(out, "\x1b[?1000l")
 }
 
 // FlowControlConfig holds flow control configuration
@@ -214,20 +358,56 @@ func setupFlowControl(flowControl string, interrupt bool) *FlowControlConfig {
 
 // copyWithFlowControl copies data with flow control handling
 func copyWithFlowControl(src io.Reader, dst io.Writer, flowControl *FlowControlConfig) error {
-	// Basic implementation - in full version would handle XON/XOFF
+	if flowControl == nil || !flowControl.Enabled {
+		// No flow control - simple copy
+		_, err := io.Copy(dst, src)
+		return err
+	}
+
+	// Flow control enabled - handle XON/XOFF
+	// XON = 0x11 (Ctrl+Q), XOFF = 0x13 (Ctrl+S)
+	const XON = 0x11
+	const XOFF = 0x13
+
 	buf := make([]byte, 4096)
+	flowStopped := false
+
 	for {
 		n, err := src.Read(buf)
 		if n > 0 {
-			if _, writeErr := dst.Write(buf[:n]); writeErr != nil {
-				// Handle write errors (flow control)
-				if flowControl.Enabled && flowControl.Interrupt {
-					// Interrupt immediately on flow control
-					return writeErr
+			// Check for XON/XOFF in input and filter them out
+			data := make([]byte, 0, n)
+			for i := 0; i < n; i++ {
+				b := buf[i]
+				if b == XOFF {
+					flowStopped = true
+					// Skip XOFF character
+				} else if b == XON {
+					flowStopped = false
+					// Skip XON character
+				} else {
+					data = append(data, b)
 				}
+			}
+
+			// Write data if flow is not stopped
+			if !flowStopped && len(data) > 0 {
+				if _, writeErr := dst.Write(data); writeErr != nil {
+					if flowControl.Interrupt {
+						return writeErr
+					}
+					// On write error, treat as flow control stop
+					flowStopped = true
+				}
+			} else if flowStopped {
+				// Flow stopped - wait a bit before trying again
+				time.Sleep(10 * time.Millisecond)
 			}
 		}
 		if err != nil {
+			if err == io.EOF {
+				return nil
+			}
 			return err
 		}
 	}
@@ -251,10 +431,11 @@ func setWindowSize(termFile *os.File, sess *session.Session, adaptSize bool) err
 // detachReader wraps an io.Reader to detect the detach sequence
 type detachReader struct {
 	reader      io.Reader
-	state       int            // 0: normal, 1: saw command char
-	pending     []byte         // bytes to output before reading more
-	commandChar byte           // Command character (default: Ctrl+A = 0x01)
-	literalChar byte           // Literal escape character (default: 'a')
+	state       int               // 0: normal, 1: saw command char
+	pending     []byte            // bytes to output before reading more
+	digraph     []byte            // digraph input buffer
+	commandChar byte              // Command character (default: Ctrl+A = 0x01)
+	literalChar byte              // Literal escape character (default: 'a')
 	bindings    map[string]string // Custom key bindings (key -> command)
 }
 
@@ -273,6 +454,7 @@ func newDetachReaderWithConfig(reader io.Reader, config *AttachConfig) *detachRe
 		reader:      reader,
 		state:       0,
 		pending:     make([]byte, 0, 2),
+		digraph:     make([]byte, 0, 2),
 		commandChar: config.CommandChar,
 		literalChar: config.LiteralChar,
 		bindings:    bindings,
@@ -329,7 +511,7 @@ func (dr *detachReader) Read(p []byte) (n int, err error) {
 				return 0, &ErrWindowCommand{Command: cmd}
 			}
 		}
-		
+
 		switch b {
 		case 'd':
 			// Detach sequence detected
@@ -389,6 +571,11 @@ func (dr *detachReader) Read(p []byte) (n int, err error) {
 		case '.':
 			// Redraw screen
 			return 0, &ErrWindowCommand{Command: "redraw"}
+		case 0x16:
+			// C-a C-v: Enter digraph mode
+			dr.state = 8
+			dr.digraph = dr.digraph[:0]
+			return 0, nil
 		case '0', '1', '2', '3', '4', '5', '6', '7', '8', '9':
 			// Switch to window 0-9
 			return 0, &ErrWindowCommand{Command: "switch", Window: string(b)}
@@ -484,6 +671,20 @@ func (dr *detachReader) Read(p []byte) (n int, err error) {
 		}
 		dr.pending = append(dr.pending, b)
 		return 0, nil
+	case 8:
+		// Digraph input mode (two characters)
+		dr.digraph = append(dr.digraph, b)
+		if len(dr.digraph) < 2 {
+			return 0, nil
+		}
+		if val, ok := hexByte(dr.digraph[0], dr.digraph[1]); ok {
+			dr.pending = append(dr.pending, val)
+		} else {
+			dr.pending = append(dr.pending, dr.digraph...)
+		}
+		dr.digraph = dr.digraph[:0]
+		dr.state = 0
+		return 0, nil
 	}
 
 	return 0, nil
@@ -513,48 +714,49 @@ func handleWindowCommand(sess *session.Session, cmd *ErrWindowCommand, config *A
 		if envShell := os.Getenv("SHELL"); envShell != "" {
 			shellPath = envShell
 		}
-		
+
 		sessConfig := &session.Config{
-			Term: config.Term,
-			UTF8: false, // TODO: get from config
+			Term:            config.Term,
+			UTF8:            config.UTF8,
+			Encoding:        config.Encoding,
 			AllCapabilities: config.AllCapabilities,
 		}
-		
+
 		_, err := sess.CreateWindow(shellPath, []string{}, sessConfig)
 		if err != nil {
 			return fmt.Errorf("failed to create window: %w", err)
 		}
 		return nil
-		
+
 	case "next":
 		sess.NextWindow()
 		return nil
-		
+
 	case "prev":
 		sess.PrevWindow()
 		return nil
-		
+
 	case "toggle":
 		sess.ToggleLastWindow()
 		return nil
-		
+
 	case "switch":
 		if cmd.Window == "" {
 			return fmt.Errorf("no window specified")
 		}
 		return sess.SwitchToWindow(cmd.Window)
-		
+
 	case "kill":
 		return sess.KillCurrentWindow()
-		
+
 	case "title":
 		sess.SetWindowTitle(cmd.Title)
 		return nil
-		
+
 	case "list":
 		// Show interactive window list
 		return ShowInteractiveWindowList(in, out, sess)
-		
+
 	case "copymode":
 		// Enter copy mode
 		win := sess.GetCurrentWindow()
@@ -562,7 +764,7 @@ func handleWindowCommand(sess *session.Session, cmd *ErrWindowCommand, config *A
 			return fmt.Errorf("no current window")
 		}
 		return EnterCopyMode(win, in, scrollback)
-		
+
 	case "paste":
 		// Paste from buffer
 		pasteContent := GetPasteBuffer()
@@ -573,21 +775,21 @@ func handleWindowCommand(sess *session.Session, cmd *ErrWindowCommand, config *A
 			}
 		}
 		return nil
-		
+
 	case "writebuffer":
 		// Write paste buffer to file
 		if cmd.Title == "" {
 			return fmt.Errorf("no filename specified")
 		}
 		return WritePasteBufferToFile(cmd.Title)
-		
+
 	case "readbuffer":
 		// Read paste buffer from file
 		if cmd.Title == "" {
 			return fmt.Errorf("no filename specified")
 		}
 		return ReadPasteBufferFromFile(cmd.Title)
-		
+
 	case "dumpscrollback":
 		// Dump scrollback to file
 		if cmd.Title == "" {
@@ -597,7 +799,7 @@ func handleWindowCommand(sess *session.Session, cmd *ErrWindowCommand, config *A
 			return fmt.Errorf("no scrollback available")
 		}
 		return WriteScrollbackToFile(scrollback, cmd.Title)
-		
+
 	case "help":
 		// Show help
 		ShowHelp(out)
@@ -605,16 +807,16 @@ func handleWindowCommand(sess *session.Session, cmd *ErrWindowCommand, config *A
 		buf := make([]byte, 1)
 		in.Read(buf)
 		return nil
-		
+
 	case "command":
 		// Show command prompt
 		return ShowCommandPrompt(in, out, sess, config, scrollback)
-		
+
 	case "redraw":
 		// Redraw screen - clear and redraw
-		fmt.Fprint(out, "\033[2J\033[H")
+		ClearScreenAndHome(out)
 		return nil
-		
+
 	default:
 		return fmt.Errorf("unknown window command: %s", cmd.Command)
 	}
@@ -679,3 +881,48 @@ func getPerWindowLogWriter(logDir string, timestamp bool) *PerWindowLogWriter {
 	return writer
 }
 
+// lockScreen locks the screen with password prompt (Windows version)
+func lockScreen(in, out *os.File) error {
+	fmt.Fprint(out, "\r\nScreen locked. Enter password: ")
+
+	// Read password (without echo)
+	oldState, err := term.GetState(int(in.Fd()))
+	if err != nil {
+		return err
+	}
+	defer term.Restore(int(in.Fd()), oldState)
+
+	// Set terminal to no-echo mode
+	term.MakeRaw(int(in.Fd()))
+
+	password := ""
+	buf := make([]byte, 1)
+	for {
+		n, err := in.Read(buf)
+		if err != nil || n == 0 {
+			break
+		}
+		if buf[0] == '\r' || buf[0] == '\n' {
+			break
+		}
+		if buf[0] == '\b' || buf[0] == 0x7f {
+			if len(password) > 0 {
+				password = password[:len(password)-1]
+				fmt.Fprint(out, "\b \b")
+			}
+		} else {
+			password += string(buf[0])
+			fmt.Fprint(out, "*")
+		}
+	}
+
+	fmt.Fprint(out, "\r\n")
+
+	// For now, any password unlocks (in real implementation, would verify)
+	// Wait for any key to unlock
+	fmt.Fprint(out, "Press any key to unlock...")
+	in.Read(buf)
+	fmt.Fprint(out, "\r\n")
+
+	return nil
+}

@@ -26,6 +26,9 @@ func Start(cmdPath string, args []string) (*PTYProcess, error) {
 func StartWithEnv(cmdPath string, args []string, envOverrides map[string]string) (*PTYProcess, error) {
 	cmd := exec.Command(cmdPath, args...)
 	
+	// Set process group management (Unix only)
+	setProcessGroup(cmd)
+	
 	// Start with current environment
 	cmd.Env = os.Environ()
 	

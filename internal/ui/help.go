@@ -3,8 +3,11 @@ package ui
 import (
 	"fmt"
 	"os"
+	"runtime"
+	"strconv"
 	"strings"
 
+	"github.com/inoki/sgreen/internal/pty"
 	"github.com/inoki/sgreen/internal/session"
 )
 
@@ -19,7 +22,7 @@ var (
 var availableCommands = []string{
 	"title", "kill", "next", "prev", "select", "copy", "paste",
 	"writebuf", "readbuf", "dump", "list", "help", "quit", "detach",
-	"rename", "lock",
+	"rename", "lock", "acladd", "acldel", "acl", "layout",
 }
 
 // ShowHelp displays the help screen with key bindings
@@ -81,21 +84,21 @@ Press any key to continue...
 // ShowCommandPrompt displays a command prompt and executes commands
 func ShowCommandPrompt(in, out *os.File, sess *session.Session, config *AttachConfig, scrollback *ScrollbackBuffer) error {
 	fmt.Fprint(out, "\r\n: ")
-	
+
 	// Read command line with history and completion support
 	cmdLine := make([]byte, 0, 256)
 	buf := make([]byte, 1)
 	currentHistoryIndex := -1
 	originalCmd := ""
-	
+
 	for {
 		n, err := in.Read(buf)
 		if err != nil || n == 0 {
 			return err
 		}
-		
+
 		b := buf[0]
-		
+
 		// Handle escape sequences (arrow keys, etc.)
 		if b == 0x1b { // ESC
 			// Read next bytes to determine escape sequence
@@ -110,7 +113,7 @@ func ShowCommandPrompt(in, out *os.File, sess *session.Session, config *AttachCo
 					break
 				}
 			}
-			
+
 			// Handle arrow keys
 			if len(seq) >= 2 && seq[0] == '[' {
 				switch seq[1] {
@@ -153,11 +156,11 @@ func ShowCommandPrompt(in, out *os.File, sess *session.Session, config *AttachCo
 			}
 			continue
 		}
-		
+
 		if b == '\r' || b == '\n' {
 			break
 		}
-		
+
 		if b == '\t' {
 			// Tab completion
 			currentCmd := string(cmdLine)
@@ -180,7 +183,7 @@ func ShowCommandPrompt(in, out *os.File, sess *session.Session, config *AttachCo
 			}
 			continue
 		}
-		
+
 		if b == '\b' || b == 0x7f {
 			// Backspace
 			if len(cmdLine) > 0 {
@@ -195,12 +198,12 @@ func ShowCommandPrompt(in, out *os.File, sess *session.Session, config *AttachCo
 			currentHistoryIndex = -1 // Reset history navigation
 		}
 	}
-	
+
 	cmd := strings.TrimSpace(string(cmdLine))
 	if cmd == "" {
 		return nil
 	}
-	
+
 	// Add to history (avoid duplicates)
 	if len(commandHistory) == 0 || commandHistory[len(commandHistory)-1] != cmd {
 		commandHistory = append(commandHistory, cmd)
@@ -209,23 +212,46 @@ func ShowCommandPrompt(in, out *os.File, sess *session.Session, config *AttachCo
 		}
 	}
 	historyIndex = len(commandHistory)
-	
-	// Parse and execute command
-	return executeCommand(cmd, sess, config, scrollback, in, out)
+
+	// Parse and execute commands (support semicolon-separated commands)
+	commands := strings.Split(cmd, ";")
+	for _, singleCmd := range commands {
+		singleCmd = strings.TrimSpace(singleCmd)
+		if singleCmd == "" {
+			continue
+		}
+		if err := executeCommand(singleCmd, sess, config, scrollback, in, out); err != nil {
+			// Return error on first failure
+			return err
+		}
+	}
+	return nil
 }
 
 // findCommandMatches finds commands that match the prefix
 func findCommandMatches(prefix string) []string {
 	matches := make([]string, 0)
 	prefixLower := strings.ToLower(prefix)
-	
+
 	for _, cmd := range availableCommands {
 		if strings.HasPrefix(strings.ToLower(cmd), prefixLower) {
 			matches = append(matches, cmd)
 		}
 	}
-	
+
 	return matches
+}
+
+func hasRedirectionTokens(args []string) bool {
+	for _, arg := range args {
+		if strings.Contains(arg, ">") || strings.Contains(arg, "<") {
+			return true
+		}
+		if strings.HasPrefix(arg, "2>") || strings.HasPrefix(arg, "1>") || strings.HasPrefix(arg, "&>") {
+			return true
+		}
+	}
+	return false
 }
 
 // executeCommand executes a screen command
@@ -234,10 +260,10 @@ func executeCommand(cmd string, sess *session.Session, config *AttachConfig, scr
 	if len(parts) == 0 {
 		return nil
 	}
-	
+
 	command := parts[0]
 	args := parts[1:]
-	
+
 	switch command {
 	case "title":
 		if len(args) > 0 {
@@ -245,24 +271,24 @@ func executeCommand(cmd string, sess *session.Session, config *AttachConfig, scr
 			sess.SetWindowTitle(title)
 		}
 		return nil
-		
+
 	case "kill":
 		return sess.KillCurrentWindow()
-		
+
 	case "next":
 		sess.NextWindow()
 		return nil
-		
+
 	case "prev":
 		sess.PrevWindow()
 		return nil
-		
+
 	case "select":
 		if len(args) > 0 {
 			return sess.SwitchToWindow(args[0])
 		}
 		return fmt.Errorf("usage: select <window>")
-		
+
 	case "copy":
 		// Enter copy mode
 		win := sess.GetCurrentWindow()
@@ -270,7 +296,7 @@ func executeCommand(cmd string, sess *session.Session, config *AttachConfig, scr
 			return fmt.Errorf("no current window")
 		}
 		return EnterCopyMode(win, os.Stdin, scrollback)
-		
+
 	case "paste":
 		// Paste from buffer
 		pasteContent := GetPasteBuffer()
@@ -281,19 +307,19 @@ func executeCommand(cmd string, sess *session.Session, config *AttachConfig, scr
 			}
 		}
 		return nil
-		
+
 	case "writebuf":
 		if len(args) > 0 {
 			return WritePasteBufferToFile(args[0])
 		}
 		return fmt.Errorf("usage: writebuf <filename>")
-		
+
 	case "readbuf":
 		if len(args) > 0 {
 			return ReadPasteBufferFromFile(args[0])
 		}
 		return fmt.Errorf("usage: readbuf <filename>")
-		
+
 	case "dump":
 		if len(args) > 0 {
 			if scrollback == nil {
@@ -302,11 +328,11 @@ func executeCommand(cmd string, sess *session.Session, config *AttachConfig, scr
 			return WriteScrollbackToFile(scrollback, args[0])
 		}
 		return fmt.Errorf("usage: dump <filename>")
-		
+
 	case "quit", "exit":
 		// Exit all windows
 		return fmt.Errorf("quit")
-		
+
 	case "rename":
 		if len(args) > 0 {
 			newName := args[0]
@@ -317,14 +343,218 @@ func executeCommand(cmd string, sess *session.Session, config *AttachConfig, scr
 			return nil
 		}
 		return fmt.Errorf("usage: rename <new-name>")
-		
+
 	case "lock":
 		// Lock screen (same as C-a x)
 		// lockScreen is defined in attach.go (same package)
 		return lockScreen(in, out)
-		
+
+	case "acladd":
+		if len(args) == 0 {
+			return fmt.Errorf("usage: acladd <user>")
+		}
+		user := args[0]
+		if err := sess.AddUser(user); err != nil {
+			return fmt.Errorf("failed to add user: %w", err)
+		}
+		fmt.Fprintf(out, "\r\nAdded user: %s\r\n", user)
+		return nil
+
+	case "acldel":
+		if len(args) == 0 {
+			return fmt.Errorf("usage: acldel <user>")
+		}
+		user := args[0]
+		if err := sess.RemoveUser(user); err != nil {
+			return fmt.Errorf("failed to remove user: %w", err)
+		}
+		fmt.Fprintf(out, "\r\nRemoved user: %s\r\n", user)
+		return nil
+
+	case "acl":
+		fmt.Fprintf(out, "\r\nOwner: %s\r\n", sess.Owner)
+		if len(sess.AllowedUsers) == 0 {
+			fmt.Fprintf(out, "Allowed users: (none)\r\n")
+		} else {
+			fmt.Fprintf(out, "Allowed users: %s\r\n", strings.Join(sess.AllowedUsers, ", "))
+		}
+		return nil
+
+	case "screen":
+		// Create window with command: screen [n] [cmd [args]]
+		// Parse: screen [number] [command] [args...]
+		if len(args) == 0 {
+			// No args - create shell window
+			shellPath := "/bin/sh"
+			if envShell := os.Getenv("SHELL"); envShell != "" {
+				shellPath = envShell
+			}
+			sessConfig := &session.Config{
+				Term:            config.Term,
+				UTF8:            config.UTF8,
+				Encoding:        config.Encoding,
+				AllCapabilities: config.AllCapabilities,
+			}
+			_, err := sess.CreateWindow(shellPath, []string{}, sessConfig)
+			return err
+		}
+
+		// Check if first arg is a number (0-9)
+		windowNum := -1
+		cmdStart := 0
+		if len(args) > 0 {
+			if num, err := strconv.Atoi(args[0]); err == nil && num >= 0 && num <= 9 {
+				windowNum = num
+				cmdStart = 1
+			}
+		}
+
+		// Get command and args
+		if cmdStart >= len(args) {
+			// No command specified - create shell
+			shellPath := "/bin/sh"
+			if envShell := os.Getenv("SHELL"); envShell != "" {
+				shellPath = envShell
+			}
+			sessConfig := &session.Config{
+				Term:            config.Term,
+				UTF8:            config.UTF8,
+				Encoding:        config.Encoding,
+				AllCapabilities: config.AllCapabilities,
+			}
+			win, err := sess.CreateWindow(shellPath, []string{}, sessConfig)
+			if err == nil && windowNum >= 0 {
+				// Note: Setting specific window number would require renumbering
+				// For now, window is created with next available number
+				_ = win
+			}
+			return err
+		}
+
+		cmdPath := args[cmdStart]
+		cmdArgs := args[cmdStart+1:]
+
+		sessConfig := &session.Config{
+			Term:            config.Term,
+			UTF8:            config.UTF8,
+			Encoding:        config.Encoding,
+			AllCapabilities: config.AllCapabilities,
+		}
+		win, err := sess.CreateWindow(cmdPath, cmdArgs, sessConfig)
+		if err == nil && windowNum >= 0 {
+			// Note: Setting specific window number would require renumbering
+			// For now, window is created with next available number
+			_ = win
+		}
+		return err
+
+	case "exec":
+		// Execute command in current window: exec [cmd [args]]
+		if len(args) == 0 {
+			return fmt.Errorf("usage: exec <command> [args...]")
+		}
+
+		cmdPath := args[0]
+		cmdArgs := args[1:]
+		// If redirection patterns are present, execute via shell.
+		if hasRedirectionTokens(args) {
+			cmdLine := strings.Join(args, " ")
+			if runtime.GOOS == "windows" {
+				cmdPath = "cmd"
+				cmdArgs = []string{"/C", cmdLine}
+			} else {
+				shellPath := "/bin/sh"
+				if envShell := os.Getenv("SHELL"); envShell != "" {
+					shellPath = envShell
+				}
+				cmdPath = shellPath
+				cmdArgs = []string{"-c", cmdLine}
+			}
+		}
+
+		// Get current window
+		win := sess.GetCurrentWindow()
+		if win == nil {
+			return fmt.Errorf("no current window")
+		}
+
+		// Kill current process in window
+		if ptyProc := win.GetPTYProcess(); ptyProc != nil {
+			if ptyProc.Cmd != nil && ptyProc.Cmd.Process != nil {
+				ptyProc.Cmd.Process.Kill()
+			}
+		}
+
+		// Start new process
+		sessConfig := &session.Config{
+			Term:            config.Term,
+			UTF8:            config.UTF8,
+			Encoding:        config.Encoding,
+			AllCapabilities: config.AllCapabilities,
+		}
+
+		// Create new PTY process
+		ptyProc, err := pty.StartWithEnv(cmdPath, cmdArgs, map[string]string{
+			"TERM": sessConfig.Term,
+		})
+		if err != nil {
+			return fmt.Errorf("failed to exec command: %w", err)
+		}
+
+		// Update window with new PTY process
+		win.SetPTYProcess(ptyProc)
+		win.Pid = ptyProc.Cmd.Process.Pid
+		win.CmdPath = cmdPath
+		win.CmdArgs = cmdArgs
+
+		return nil
+
+	case "layout":
+		if len(args) == 0 {
+			return fmt.Errorf("usage: layout <save|select|list> [name]")
+		}
+		switch args[0] {
+		case "save":
+			if len(args) < 2 {
+				return fmt.Errorf("usage: layout save <name>")
+			}
+			if err := sess.SaveLayout(args[1]); err != nil {
+				return fmt.Errorf("failed to save layout: %w", err)
+			}
+			fmt.Fprintf(out, "\r\nSaved layout: %s\r\n", args[1])
+			return nil
+		case "select":
+			if len(args) < 2 {
+				return fmt.Errorf("usage: layout select <name>")
+			}
+			if err := sess.SelectLayout(args[1]); err != nil {
+				return fmt.Errorf("failed to select layout: %w", err)
+			}
+			fmt.Fprintf(out, "\r\nSelected layout: %s\r\n", args[1])
+			return nil
+		case "list":
+			names := sess.ListLayouts()
+			if len(names) == 0 {
+				fmt.Fprintf(out, "\r\nNo layouts saved\r\n")
+				return nil
+			}
+			fmt.Fprintf(out, "\r\nLayouts: %s\r\n", strings.Join(names, ", "))
+			return nil
+		default:
+			return fmt.Errorf("usage: layout <save|select|list> [name]")
+		}
+
+	case "displays":
+		// List displays (multi-user sessions)
+		// For now, just show current session info
+		fmt.Fprintf(out, "\r\nSession: %s\r\n", sess.ID)
+		fmt.Fprintf(out, "Windows: %d\r\n", len(sess.Windows))
+		for i, win := range sess.Windows {
+			fmt.Fprintf(out, "  Window %d: %s (PID: %d)\r\n", i, win.Title, win.Pid)
+		}
+		return nil
+
 	default:
 		return fmt.Errorf("unknown command: %s", command)
 	}
 }
-

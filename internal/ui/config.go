@@ -13,6 +13,8 @@ type AttachConfig struct {
 	FlowControl    string // Flow control: "on", "off", "auto"
 	Interrupt      bool   // Interrupt output immediately when flow control is on
 	Term           string // Terminal type (for window creation)
+	UTF8           bool   // UTF-8 mode
+	Encoding       string // Window encoding (e.g., UTF-8, ISO-8859-1)
 	Scrollback     int    // Scrollback buffer size
 	StatusLine     bool   // Enable status line
 	StatusFormat   string // Status line format string
@@ -38,6 +40,8 @@ func DefaultAttachConfig() *AttachConfig {
 		AllCapabilities: false,
 		FlowControl: "off",
 		Interrupt: false,
+		UTF8: false,
+		Encoding: "",
 		Scrollback: 1000,
 	}
 }

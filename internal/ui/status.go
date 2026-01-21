@@ -17,6 +17,7 @@ type StatusLine struct {
 	enabled   bool
 	format    string
 	lastUpdate time.Time
+	lastRendered string
 }
 
 // NewStatusLine creates a new status line
@@ -47,12 +48,18 @@ func (sl *StatusLine) Update(out *os.File, sess *session.Session) {
 
 	// Build status string
 	status := sl.buildStatusString(sess, win, width)
+	if status == sl.lastRendered {
+		// No change, skip redraw
+		return
+	}
 
 	// Move cursor to bottom line and clear it
-	fmt.Fprintf(out, "\033[%d;1H\033[K", getTerminalHeight(out))
+	MoveCursor(out, getTerminalHeight(out), 1)
+	ClearLine(out)
 	fmt.Fprint(out, status)
 	
 	sl.lastUpdate = time.Now()
+	sl.lastRendered = status
 }
 
 // buildStatusString builds the status line string
