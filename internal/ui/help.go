@@ -14,7 +14,6 @@ import (
 // Command history storage
 var (
 	commandHistory []string
-	historyIndex   int = -1
 	maxHistory     int = 100
 )
 
@@ -78,12 +77,12 @@ Command Prompt Commands:
 
 Press any key to continue...
 `
-	fmt.Fprint(out, helpText)
+	_, _ = fmt.Fprint(out, helpText)
 }
 
 // ShowCommandPrompt displays a command prompt and executes commands
 func ShowCommandPrompt(in, out *os.File, sess *session.Session, config *AttachConfig, scrollback *ScrollbackBuffer) error {
-	fmt.Fprint(out, "\r\n: ")
+	_, _ = fmt.Fprint(out, "\r\n: ")
 
 	// Read command line with history and completion support
 	cmdLine := make([]byte, 0, 256)
@@ -126,9 +125,9 @@ func ShowCommandPrompt(in, out *os.File, sess *session.Session, config *AttachCo
 							currentHistoryIndex--
 						}
 						// Clear current line
-						fmt.Fprint(out, "\r\033[K: ")
+						_, _ = fmt.Fprintf(out, "\r\033[K: ")
 						cmdLine = []byte(commandHistory[currentHistoryIndex])
-						fmt.Fprint(out, string(cmdLine))
+						_, _ = fmt.Fprint(out, string(cmdLine))
 					}
 					continue
 				case 'B': // Down arrow - history next
@@ -136,15 +135,15 @@ func ShowCommandPrompt(in, out *os.File, sess *session.Session, config *AttachCo
 						if currentHistoryIndex < len(commandHistory)-1 {
 							currentHistoryIndex++
 							// Clear current line
-							fmt.Fprint(out, "\r\033[K: ")
+							_, _ = fmt.Fprintf(out, "\r\033[K: ")
 							cmdLine = []byte(commandHistory[currentHistoryIndex])
-							fmt.Fprint(out, string(cmdLine))
+							_, _ = fmt.Fprint(out, string(cmdLine))
 						} else {
 							// Restore original command
 							currentHistoryIndex = -1
-							fmt.Fprint(out, "\r\033[K: ")
+							_, _ = fmt.Fprintf(out, "\r\033[K: ")
 							cmdLine = []byte(originalCmd)
-							fmt.Fprint(out, string(cmdLine))
+							_, _ = fmt.Fprint(out, string(cmdLine))
 						}
 					}
 					continue
@@ -169,17 +168,17 @@ func ShowCommandPrompt(in, out *os.File, sess *session.Session, config *AttachCo
 				// Single match - complete it
 				completed := matches[0]
 				// Clear and rewrite
-				fmt.Fprint(out, "\r\033[K: ")
+				_, _ = fmt.Fprintf(out, "\r\033[K: ")
 				cmdLine = []byte(completed + " ")
-				fmt.Fprint(out, string(cmdLine))
+				_, _ = fmt.Fprint(out, string(cmdLine))
 			} else if len(matches) > 1 {
 				// Multiple matches - show them
-				fmt.Fprint(out, "\r\n")
+				_, _ = fmt.Fprintf(out, "\r\n")
 				for _, match := range matches {
-					fmt.Fprintf(out, "%s ", match)
+					_, _ = fmt.Fprintf(out, "%s ", match)
 				}
-				fmt.Fprint(out, "\r\n: ")
-				fmt.Fprint(out, string(cmdLine))
+				_, _ = fmt.Fprintf(out, "\r\n: ")
+				_, _ = fmt.Fprint(out, string(cmdLine))
 			}
 			continue
 		}
@@ -188,13 +187,13 @@ func ShowCommandPrompt(in, out *os.File, sess *session.Session, config *AttachCo
 			// Backspace
 			if len(cmdLine) > 0 {
 				cmdLine = cmdLine[:len(cmdLine)-1]
-				fmt.Fprint(out, "\b \b")
+				_, _ = fmt.Fprintf(out, "\b \b")
 			}
 			currentHistoryIndex = -1 // Reset history navigation
 		} else if b >= 32 && b < 127 {
 			// Printable character
 			cmdLine = append(cmdLine, b)
-			fmt.Fprint(out, string(b))
+			_, _ = fmt.Fprint(out, string(b))
 			currentHistoryIndex = -1 // Reset history navigation
 		}
 	}
@@ -211,8 +210,6 @@ func ShowCommandPrompt(in, out *os.File, sess *session.Session, config *AttachCo
 			commandHistory = commandHistory[1:]
 		}
 	}
-	historyIndex = len(commandHistory)
-
 	// Parse and execute commands (support semicolon-separated commands)
 	commands := strings.Split(cmd, ";")
 	for _, singleCmd := range commands {
@@ -303,7 +300,9 @@ func executeCommand(cmd string, sess *session.Session, config *AttachConfig, scr
 		if len(pasteContent) > 0 {
 			win := sess.GetCurrentWindow()
 			if win != nil && win.GetPTYProcess() != nil {
-				win.GetPTYProcess().Pty.Write(pasteContent)
+				if _, err := win.GetPTYProcess().Pty.Write(pasteContent); err != nil {
+					return err
+				}
 			}
 		}
 		return nil
@@ -339,7 +338,7 @@ func executeCommand(cmd string, sess *session.Session, config *AttachConfig, scr
 			if err := sess.Rename(newName); err != nil {
 				return fmt.Errorf("failed to rename session: %w", err)
 			}
-			fmt.Fprintf(out, "\r\nSession renamed to: %s\r\n", newName)
+			_, _ = fmt.Fprintf(out, "\r\nSession renamed to: %s\r\n", newName)
 			return nil
 		}
 		return fmt.Errorf("usage: rename <new-name>")
@@ -357,7 +356,7 @@ func executeCommand(cmd string, sess *session.Session, config *AttachConfig, scr
 		if err := sess.AddUser(user); err != nil {
 			return fmt.Errorf("failed to add user: %w", err)
 		}
-		fmt.Fprintf(out, "\r\nAdded user: %s\r\n", user)
+		_, _ = fmt.Fprintf(out, "\r\nAdded user: %s\r\n", user)
 		return nil
 
 	case "acldel":
@@ -368,15 +367,15 @@ func executeCommand(cmd string, sess *session.Session, config *AttachConfig, scr
 		if err := sess.RemoveUser(user); err != nil {
 			return fmt.Errorf("failed to remove user: %w", err)
 		}
-		fmt.Fprintf(out, "\r\nRemoved user: %s\r\n", user)
+		_, _ = fmt.Fprintf(out, "\r\nRemoved user: %s\r\n", user)
 		return nil
 
 	case "acl":
-		fmt.Fprintf(out, "\r\nOwner: %s\r\n", sess.Owner)
+		_, _ = fmt.Fprintf(out, "\r\nOwner: %s\r\n", sess.Owner)
 		if len(sess.AllowedUsers) == 0 {
-			fmt.Fprintf(out, "Allowed users: (none)\r\n")
+			_, _ = fmt.Fprintf(out, "Allowed users: (none)\r\n")
 		} else {
-			fmt.Fprintf(out, "Allowed users: %s\r\n", strings.Join(sess.AllowedUsers, ", "))
+			_, _ = fmt.Fprintf(out, "Allowed users: %s\r\n", strings.Join(sess.AllowedUsers, ", "))
 		}
 		return nil
 
@@ -481,7 +480,9 @@ func executeCommand(cmd string, sess *session.Session, config *AttachConfig, scr
 		// Kill current process in window
 		if ptyProc := win.GetPTYProcess(); ptyProc != nil {
 			if ptyProc.Cmd != nil && ptyProc.Cmd.Process != nil {
-				ptyProc.Cmd.Process.Kill()
+				if err := ptyProc.Cmd.Process.Kill(); err != nil {
+					return err
+				}
 			}
 		}
 
@@ -521,7 +522,7 @@ func executeCommand(cmd string, sess *session.Session, config *AttachConfig, scr
 			if err := sess.SaveLayout(args[1]); err != nil {
 				return fmt.Errorf("failed to save layout: %w", err)
 			}
-			fmt.Fprintf(out, "\r\nSaved layout: %s\r\n", args[1])
+			_, _ = fmt.Fprintf(out, "\r\nSaved layout: %s\r\n", args[1])
 			return nil
 		case "select":
 			if len(args) < 2 {
@@ -530,15 +531,15 @@ func executeCommand(cmd string, sess *session.Session, config *AttachConfig, scr
 			if err := sess.SelectLayout(args[1]); err != nil {
 				return fmt.Errorf("failed to select layout: %w", err)
 			}
-			fmt.Fprintf(out, "\r\nSelected layout: %s\r\n", args[1])
+			_, _ = fmt.Fprintf(out, "\r\nSelected layout: %s\r\n", args[1])
 			return nil
 		case "list":
 			names := sess.ListLayouts()
 			if len(names) == 0 {
-				fmt.Fprintf(out, "\r\nNo layouts saved\r\n")
+				_, _ = fmt.Fprintf(out, "\r\nNo layouts saved\r\n")
 				return nil
 			}
-			fmt.Fprintf(out, "\r\nLayouts: %s\r\n", strings.Join(names, ", "))
+			_, _ = fmt.Fprintf(out, "\r\nLayouts: %s\r\n", strings.Join(names, ", "))
 			return nil
 		default:
 			return fmt.Errorf("usage: layout <save|select|list> [name]")
@@ -547,10 +548,10 @@ func executeCommand(cmd string, sess *session.Session, config *AttachConfig, scr
 	case "displays":
 		// List displays (multi-user sessions)
 		// For now, just show current session info
-		fmt.Fprintf(out, "\r\nSession: %s\r\n", sess.ID)
-		fmt.Fprintf(out, "Windows: %d\r\n", len(sess.Windows))
+		_, _ = fmt.Fprintf(out, "\r\nSession: %s\r\n", sess.ID)
+		_, _ = fmt.Fprintf(out, "Windows: %d\r\n", len(sess.Windows))
 		for i, win := range sess.Windows {
-			fmt.Fprintf(out, "  Window %d: %s (PID: %d)\r\n", i, win.Title, win.Pid)
+			_, _ = fmt.Fprintf(out, "  Window %d: %s (PID: %d)\r\n", i, win.Title, win.Pid)
 		}
 		return nil
 

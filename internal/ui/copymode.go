@@ -65,7 +65,9 @@ func EnterCopyMode(win *session.Window, termFile *os.File, scrollback *Scrollbac
 	if err != nil {
 		return err
 	}
-	defer term.Restore(int(termFile.Fd()), oldState)
+	defer func() {
+		_ = term.Restore(int(termFile.Fd()), oldState)
+	}()
 
 	// Initialize copy mode
 	cm := &CopyMode{
@@ -91,7 +93,7 @@ func EnterCopyMode(win *session.Window, termFile *os.File, scrollback *Scrollbac
 // run executes the copy mode interaction loop
 func (cm *CopyMode) run(termFile *os.File) error {
 	// Display copy mode prompt
-	fmt.Fprint(termFile, "\r\n[Copy mode - Use arrow keys to navigate, Space to mark, Enter to copy, / to search, q to quit]\r\n")
+	_, _ = fmt.Fprint(termFile, "\r\n[Copy mode - Use arrow keys to navigate, Space to mark, Enter to copy, / to search, q to quit]\r\n")
 
 	buf := make([]byte, 1)
 	searchInput := make([]byte, 0, 256)
@@ -123,13 +125,13 @@ func (cm *CopyMode) run(termFile *os.File) error {
 				// Backspace in search
 				if len(searchInput) > 0 {
 					searchInput = searchInput[:len(searchInput)-1]
-					fmt.Fprint(termFile, "\b \b")
+					_, _ = fmt.Fprint(termFile, "\b \b")
 				}
 				continue
 			} else if key >= 32 && key < 127 {
 				// Add to search input
 				searchInput = append(searchInput, key)
-				fmt.Fprint(termFile, string(key))
+				_, _ = fmt.Fprint(termFile, string(key))
 				continue
 			}
 		}
@@ -174,7 +176,7 @@ func (cm *CopyMode) run(termFile *os.File) error {
 			// Enter search mode
 			cm.searchMode = true
 			searchInput = searchInput[:0]
-			fmt.Fprint(termFile, "\r\nSearch: ")
+			_, _ = fmt.Fprint(termFile, "\r\nSearch: ")
 			continue
 		case 'n', 'N':
 			// Next search result
@@ -392,7 +394,7 @@ func (cm *CopyMode) updateDisplay(termFile *os.File) {
 	if len(status) > 80 {
 		status = status[:77] + "..."
 	}
-	fmt.Fprint(termFile, status)
+	_, _ = fmt.Fprint(termFile, status)
 }
 
 // WritePasteBufferToFile writes the paste buffer to a file
@@ -417,7 +419,9 @@ func WriteScrollbackToFile(scrollback *ScrollbackBuffer, filename string) error 
 	if err != nil {
 		return err
 	}
-	defer file.Close()
+	defer func() {
+		_ = file.Close()
+	}()
 
 	_, err = scrollback.WriteTo(file)
 	return err

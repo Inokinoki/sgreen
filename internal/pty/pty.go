@@ -105,7 +105,7 @@ func getPtsPath(ptyFile *os.File) (string, error) {
 func (p *PTYProcess) Pipe(clientIn io.Reader, clientOut io.Writer) error {
 	// Copy from client input to PTY
 	go func() {
-		io.Copy(p.Pty, clientIn)
+		_, _ = io.Copy(p.Pty, clientIn)
 	}()
 
 	// Copy from PTY to client output (main loop)

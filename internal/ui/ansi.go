@@ -7,7 +7,7 @@ import (
 
 // ClearScreen clears the terminal screen.
 func ClearScreen(out io.Writer) {
-	fmt.Fprint(out, "\033[2J")
+	_, _ = fmt.Fprint(out, "\033[2J")
 }
 
 // MoveCursor moves the cursor to the given row and column (1-based).
@@ -18,12 +18,12 @@ func MoveCursor(out io.Writer, row, col int) {
 	if col < 1 {
 		col = 1
 	}
-	fmt.Fprintf(out, "\033[%d;%dH", row, col)
+	_, _ = fmt.Fprintf(out, "\033[%d;%dH", row, col)
 }
 
 // ClearLine clears the current line from the cursor to the end.
 func ClearLine(out io.Writer) {
-	fmt.Fprint(out, "\033[K")
+	_, _ = fmt.Fprint(out, "\033[K")
 }
 
 // ClearScreenAndHome clears the screen and moves cursor to home.
@@ -40,21 +40,21 @@ func SetColor(out io.Writer, color int) {
 	if color > 7 {
 		color = 7
 	}
-	fmt.Fprintf(out, "\033[3%dm", color)
+	_, _ = fmt.Fprintf(out, "\033[3%dm", color)
 }
 
 // SetStyle sets text styles: bold, underline, italic.
 func SetStyle(out io.Writer, bold, underline, italic bool) {
 	// Reset first, then apply requested styles.
-	fmt.Fprint(out, "\033[0m")
+	_, _ = fmt.Fprint(out, "\033[0m")
 	if bold {
-		fmt.Fprint(out, "\033[1m")
+		_, _ = fmt.Fprint(out, "\033[1m")
 	}
 	if underline {
-		fmt.Fprint(out, "\033[4m")
+		_, _ = fmt.Fprint(out, "\033[4m")
 	}
 	if italic {
-		fmt.Fprint(out, "\033[3m")
+		_, _ = fmt.Fprint(out, "\033[3m")
 	}
 }
 
@@ -66,7 +66,7 @@ func SetColor256(out io.Writer, color int) {
 	if color > 255 {
 		color = 255
 	}
-	fmt.Fprintf(out, "\033[38;5;%dm", color)
+	_, _ = fmt.Fprintf(out, "\033[38;5;%dm", color)
 }
 
 // SetTrueColor sets a truecolor RGB foreground color.
@@ -89,5 +89,5 @@ func SetTrueColor(out io.Writer, r, g, b int) {
 	if b > 255 {
 		b = 255
 	}
-	fmt.Fprintf(out, "\033[38;2;%d;%d;%dm", r, g, b)
+	_, _ = fmt.Fprintf(out, "\033[38;2;%d;%d;%dm", r, g, b)
 }

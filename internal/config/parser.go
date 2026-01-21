@@ -104,8 +104,8 @@ func ParseConfigFile(filename string) (*Config, error) {
 
 // parseConfigLines parses configuration lines, handling source directives
 func parseConfigLines(lines []string, config *Config, baseDir string, processedFiles map[string]bool) (*Config, error) {
-	for i, line := range lines {
-		line = strings.TrimSpace(line)
+	for i := 0; i < len(lines); i++ {
+		line := strings.TrimSpace(lines[i])
 
 		// Skip comments and empty lines
 		if line == "" || strings.HasPrefix(line, "#") {
@@ -120,7 +120,7 @@ func parseConfigLines(lines []string, config *Config, baseDir string, processedF
 				nextLine := strings.TrimSpace(lines[i+1])
 				line = line + " " + nextLine
 				// Skip next line in iteration
-				continue
+				i++
 			}
 		}
 
@@ -155,6 +155,7 @@ func parseConfigLines(lines []string, config *Config, baseDir string, processedF
 					_, err = parseConfigLines(sourceLines, config, filepath.Dir(sourceFile), processedFiles)
 					if err != nil {
 						// Non-fatal, continue
+						_, _ = fmt.Fprintf(os.Stderr, "Warning: failed to parse source file %s: %v\n", sourceFile, err)
 					}
 				}
 			}
@@ -162,10 +163,6 @@ func parseConfigLines(lines []string, config *Config, baseDir string, processedF
 		case "escape":
 			if len(args) >= 1 {
 				config.Escape = args[0]
-				if len(args) >= 2 {
-					// Escape format: ^Aa (command char + literal char)
-					// We'll parse this in the main config loader
-				}
 			}
 
 		case "shell":

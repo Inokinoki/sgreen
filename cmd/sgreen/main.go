@@ -129,10 +129,6 @@ func main() {
 		config.FlowControl = "off"
 	} else if *flowControlAuto {
 		config.FlowControl = "auto"
-	} else if *flowControl == "" {
-		// If -f is not set and neither -fn nor -fa is set, check if -f flag was used
-		// For screen compatibility: -f alone means "on"
-		// But we use string flag, so empty means not set
 	}
 
 	// Parse escape characters
@@ -233,7 +229,7 @@ func printVersion() {
 func handleWipe() {
 	// First, clean up orphaned processes
 	if err := session.CleanupOrphanedProcesses(); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: failed to cleanup orphaned processes: %v\n", err)
+		_, _ = fmt.Fprintf(os.Stderr, "Warning: failed to cleanup orphaned processes: %v\n", err)
 	}
 
 	sessions := session.List()
@@ -301,28 +297,22 @@ func handleSendCommand(sessionName, command string) {
 	} else {
 		sessions := session.List()
 		if len(sessions) == 0 {
-			fmt.Fprintf(os.Stderr, "No screen session found.\n")
+			_, _ = fmt.Fprintf(os.Stderr, "No screen session found.\n")
 			os.Exit(1)
 		}
 		sess = sessions[0]
 	}
 
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "No screen session found: %s\n", sessionName)
+		_, _ = fmt.Fprintf(os.Stderr, "No screen session found: %s\n", sessionName)
 		os.Exit(1)
 	}
 
 	// Execute command in session
 	if err := session.ExecuteCommand(sess, command); err != nil {
-		fmt.Fprintf(os.Stderr, "Error executing command: %v\n", err)
+		_, _ = fmt.Fprintf(os.Stderr, "Error executing command: %v\n", err)
 		os.Exit(1)
 	}
-}
-
-// isQuiet checks if quiet mode is enabled
-func isQuiet() bool {
-	// Check for -q flag (would need to pass config around)
-	return false
 }
 
 // handleNew creates a new session
@@ -360,7 +350,7 @@ func handleNew(sessionName string, cmdArgs []string, config *Config) {
 				sess, err := session.Load(parts[0])
 				if err == nil && sess != nil {
 					if !config.Quiet {
-						fmt.Fprintf(os.Stderr, "Attaching to session from $STY: %s\n", sess.ID)
+						_, _ = fmt.Fprintf(os.Stderr, "Attaching to session from $STY: %s\n", sess.ID)
 					}
 					attachToSession(sess, config)
 					return
@@ -393,7 +383,7 @@ func handleNew(sessionName string, cmdArgs []string, config *Config) {
 	// Note: This is a placeholder for when multiple windows are implemented
 	if config.PreselectWindow != "" {
 		if !config.Quiet {
-			fmt.Fprintf(os.Stderr, "Note: Window preselection (-p) requires multiple windows feature (not yet implemented)\n")
+			_, _ = fmt.Fprintf(os.Stderr, "Note: Window preselection (-p) requires multiple windows feature (not yet implemented)\n")
 		}
 	}
 
@@ -402,7 +392,7 @@ func handleNew(sessionName string, cmdArgs []string, config *Config) {
 	if err == nil && existingSess != nil {
 		// Session exists, try to attach to it instead
 		if !config.Quiet {
-			fmt.Fprintf(os.Stderr, "Session %s already exists. Attaching...\n", sessionName)
+			_, _ = fmt.Fprintf(os.Stderr, "Session %s already exists. Attaching...\n", sessionName)
 		}
 		attachToSession(existingSess, config)
 		return
@@ -418,7 +408,7 @@ func handleNew(sessionName string, cmdArgs []string, config *Config) {
 	}
 	sess, err := session.NewWithConfig(sessionName, cmdPath, args, sessConfig)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error creating session: %v\n", err)
+		_, _ = fmt.Fprintf(os.Stderr, "Error creating session: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -426,17 +416,12 @@ func handleNew(sessionName string, cmdArgs []string, config *Config) {
 	attachToSession(sess, config)
 }
 
-// handleReattach reattaches to an existing session
-func handleReattach(sessionName string) {
-	handleReattachWithConfig(sessionName, &Config{})
-}
-
 // handleReattachWithConfig reattaches with configuration
 func handleReattachWithConfig(sessionName string, config *Config) {
 	sessions := session.List()
 
 	if len(sessions) == 0 {
-		fmt.Fprintf(os.Stderr, "No screen session found.\n")
+		_, _ = fmt.Fprintf(os.Stderr, "No screen session found.\n")
 		os.Exit(1)
 	}
 
@@ -447,7 +432,7 @@ func handleReattachWithConfig(sessionName string, config *Config) {
 		// Load specific session by name
 		sess, err = session.Load(sessionName)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "No screen session found: %s\n", sessionName)
+			_, _ = fmt.Fprintf(os.Stderr, "No screen session found: %s\n", sessionName)
 			os.Exit(1)
 		}
 	} else {
@@ -458,7 +443,7 @@ func handleReattachWithConfig(sessionName string, config *Config) {
 			if len(sessions) == 1 {
 				sess = sessions[0]
 			} else {
-				fmt.Fprintf(os.Stderr, "Multiple sessions found. Specify session name with -x:\n")
+				_, _ = fmt.Fprintf(os.Stderr, "Multiple sessions found. Specify session name with -x:\n")
 				printSessionList(sessions)
 				os.Exit(1)
 			}
@@ -470,11 +455,11 @@ func handleReattachWithConfig(sessionName string, config *Config) {
 			} else if len(sessions) == 1 {
 				sess = sessions[0]
 			} else if len(detached) > 1 {
-				fmt.Fprintf(os.Stderr, "There are several detached sessions:\n")
+				_, _ = fmt.Fprintf(os.Stderr, "There are several detached sessions:\n")
 				printSessionList(sessions)
 				os.Exit(1)
 			} else {
-				fmt.Fprintf(os.Stderr, "No detached screen session found.\n")
+				_, _ = fmt.Fprintf(os.Stderr, "No detached screen session found.\n")
 				os.Exit(1)
 			}
 		}
@@ -569,7 +554,7 @@ func handlePowerDetach(sessionName string, cmdArgs []string, config *Config) {
 		if len(cmdArgs) > 0 {
 			handleNew(sessionName, cmdArgs, config)
 		} else {
-			fmt.Fprintf(os.Stderr, "No screen session found.\n")
+			_, _ = fmt.Fprintf(os.Stderr, "No screen session found.\n")
 			os.Exit(1)
 		}
 		return
@@ -585,7 +570,7 @@ func handlePowerDetach(sessionName string, cmdArgs []string, config *Config) {
 			if len(cmdArgs) > 0 {
 				handleNew(sessionName, cmdArgs, config)
 			} else {
-				fmt.Fprintf(os.Stderr, "No screen session found: %s\n", sessionName)
+				_, _ = fmt.Fprintf(os.Stderr, "No screen session found: %s\n", sessionName)
 				os.Exit(1)
 			}
 			return
@@ -614,7 +599,7 @@ func handleDetach(reattach bool, sessionName string) {
 	sessions := session.List()
 
 	if len(sessions) == 0 {
-		fmt.Fprintf(os.Stderr, "No screen session found.\n")
+		_, _ = fmt.Fprintf(os.Stderr, "No screen session found.\n")
 		os.Exit(1)
 	}
 
@@ -624,14 +609,14 @@ func handleDetach(reattach bool, sessionName string) {
 	if sessionName != "" {
 		sess, err = session.Load(sessionName)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "No screen session found: %s\n", sessionName)
+			_, _ = fmt.Fprintf(os.Stderr, "No screen session found: %s\n", sessionName)
 			os.Exit(1)
 		}
 	} else {
 		// Find first attached session
 		attached := findAttachedSessions(sessions)
 		if len(attached) == 0 {
-			fmt.Fprintf(os.Stderr, "No attached screen session found.\n")
+			_, _ = fmt.Fprintf(os.Stderr, "No attached screen session found.\n")
 			os.Exit(1)
 		}
 		sess = attached[0]
@@ -651,7 +636,7 @@ func attachToSession(sess *session.Session, config *Config) {
 	if sess.Owner != "" || len(sess.AllowedUsers) > 0 {
 		user := session.CurrentUser()
 		if !sess.CanAttach(user) {
-			fmt.Fprintf(os.Stderr, "Permission denied: user %s is not allowed to attach to session %s\n", user, sess.ID)
+			_, _ = fmt.Fprintf(os.Stderr, "Permission denied: user %s is not allowed to attach to session %s\n", user, sess.ID)
 			os.Exit(1)
 		}
 	}
@@ -663,14 +648,14 @@ func attachToSession(sess *session.Session, config *Config) {
 			if err := sess.ReconnectPTY(); err == nil {
 				// Successfully reconnected
 			} else {
-				fmt.Fprintf(os.Stderr, "Error: session %s has no active PTY process\n", sess.ID)
-				fmt.Fprintf(os.Stderr, "Failed to reconnect: %v\n", err)
-				fmt.Fprintf(os.Stderr, "The session process may have terminated\n")
+				_, _ = fmt.Fprintf(os.Stderr, "Error: session %s has no active PTY process\n", sess.ID)
+				_, _ = fmt.Fprintf(os.Stderr, "Failed to reconnect: %v\n", err)
+				_, _ = fmt.Fprintf(os.Stderr, "The session process may have terminated\n")
 				os.Exit(1)
 			}
 		} else {
-			fmt.Fprintf(os.Stderr, "Error: session %s has no active PTY process\n", sess.ID)
-			fmt.Fprintf(os.Stderr, "The session may have been created in a different process\n")
+			_, _ = fmt.Fprintf(os.Stderr, "Error: session %s has no active PTY process\n", sess.ID)
+			_, _ = fmt.Fprintf(os.Stderr, "The session may have been created in a different process\n")
 			os.Exit(1)
 		}
 	}
@@ -736,7 +721,7 @@ func attachToSession(sess *session.Session, config *Config) {
 
 	err := ui.AttachWithConfig(os.Stdin, os.Stdout, os.Stderr, sess, attachConfig)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error attaching to session: %v\n", err)
+		_, _ = fmt.Fprintf(os.Stderr, "Error attaching to session: %v\n", err)
 		os.Exit(1)
 	}
 }
@@ -761,8 +746,10 @@ func parseCommandChar(s string) byte {
 	// Handle hex notation (\x01)
 	if len(s) >= 4 && s[0:2] == "\\x" {
 		var val byte
-		fmt.Sscanf(s[2:], "%x", &val)
-		return val
+		if _, err := fmt.Sscanf(s[2:], "%x", &val); err == nil {
+			return val
+		}
+		return 0x01
 	}
 
 	// Single character
@@ -924,7 +911,7 @@ func findDefaultConfigFile() (string, error) {
 func loadConfigFile(configFile string, config *Config) {
 	if _, err := os.Stat(configFile); err != nil {
 		if !config.Quiet {
-			fmt.Fprintf(os.Stderr, "Warning: config file %s not found, using defaults\n", configFile)
+			_, _ = fmt.Fprintf(os.Stderr, "Warning: config file %s not found, using defaults\n", configFile)
 		}
 		return
 	}
@@ -933,7 +920,7 @@ func loadConfigFile(configFile string, config *Config) {
 	data, err := os.ReadFile(configFile)
 	if err != nil {
 		if !config.Quiet {
-			fmt.Fprintf(os.Stderr, "Warning: could not read config file %s: %v\n", configFile, err)
+			_, _ = fmt.Fprintf(os.Stderr, "Warning: could not read config file %s: %v\n", configFile, err)
 		}
 		return
 	}

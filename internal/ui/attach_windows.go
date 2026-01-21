@@ -296,33 +296,33 @@ func hexValue(b byte) int {
 
 // enableBracketedPaste enables bracketed paste mode on the terminal.
 func enableBracketedPaste(out io.Writer) {
-	fmt.Fprint(out, "\x1b[?2004h")
+	_, _ = fmt.Fprintf(out, "\x1b[?2004h")
 }
 
 // disableBracketedPaste disables bracketed paste mode on the terminal.
 func disableBracketedPaste(out io.Writer) {
-	fmt.Fprint(out, "\x1b[?2004l")
+	_, _ = fmt.Fprintf(out, "\x1b[?2004l")
 }
 
 // enableAltScreen switches to the alternate screen buffer.
 func enableAltScreen(out io.Writer) {
-	fmt.Fprint(out, "\x1b[?1049h")
+	_, _ = fmt.Fprintf(out, "\x1b[?1049h")
 }
 
 // disableAltScreen switches back to the normal screen buffer.
 func disableAltScreen(out io.Writer) {
-	fmt.Fprint(out, "\x1b[?1049l")
+	_, _ = fmt.Fprintf(out, "\x1b[?1049l")
 }
 
 // enableMouseTracking enables basic mouse reporting.
 func enableMouseTracking(out io.Writer) {
 	// Enable X10 mouse reporting (press only).
-	fmt.Fprint(out, "\x1b[?1000h")
+	_, _ = fmt.Fprintf(out, "\x1b[?1000h")
 }
 
 // disableMouseTracking disables mouse reporting.
 func disableMouseTracking(out io.Writer) {
-	fmt.Fprint(out, "\x1b[?1000l")
+	_, _ = fmt.Fprintf(out, "\x1b[?1000l")
 }
 
 // FlowControlConfig holds flow control configuration
@@ -883,7 +883,7 @@ func getPerWindowLogWriter(logDir string, timestamp bool) *PerWindowLogWriter {
 
 // lockScreen locks the screen with password prompt (Windows version)
 func lockScreen(in, out *os.File) error {
-	fmt.Fprint(out, "\r\nScreen locked. Enter password: ")
+	_, _ = fmt.Fprintf(out, "\r\nScreen locked. Enter password: ")
 
 	// Read password (without echo)
 	oldState, err := term.GetState(int(in.Fd()))
@@ -908,21 +908,21 @@ func lockScreen(in, out *os.File) error {
 		if buf[0] == '\b' || buf[0] == 0x7f {
 			if len(password) > 0 {
 				password = password[:len(password)-1]
-				fmt.Fprint(out, "\b \b")
+				_, _ = fmt.Fprintf(out, "\b \b")
 			}
 		} else {
 			password += string(buf[0])
-			fmt.Fprint(out, "*")
+			_, _ = fmt.Fprintf(out, "*")
 		}
 	}
 
-	fmt.Fprint(out, "\r\n")
+	_, _ = fmt.Fprintf(out, "\r\n")
 
 	// For now, any password unlocks (in real implementation, would verify)
 	// Wait for any key to unlock
-	fmt.Fprint(out, "Press any key to unlock...")
+	_, _ = fmt.Fprintf(out, "Press any key to unlock...")
 	in.Read(buf)
-	fmt.Fprint(out, "\r\n")
+	_, _ = fmt.Fprintf(out, "\r\n")
 
 	return nil
 }

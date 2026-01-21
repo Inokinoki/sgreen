@@ -50,7 +50,7 @@ func (lw *LogWriter) Write(p []byte) (n int, err error) {
 	// Check if rotation is needed
 	if lw.maxSize > 0 && lw.currentSize+int64(len(p)) > lw.maxSize {
 		if err := lw.rotate(); err != nil {
-			// Non-fatal, continue with current file
+			_ = err
 		}
 	}
 
@@ -73,12 +73,16 @@ func (lw *LogWriter) Write(p []byte) (n int, err error) {
 // rotate rotates the log file
 func (lw *LogWriter) rotate() error {
 	// Close current file
-	lw.file.Close()
+	if err := lw.file.Close(); err != nil {
+		return err
+	}
 
 	// Rename current file with timestamp
 	timestamp := time.Now().Format("20060102-150405")
 	rotatedPath := lw.basePath + "." + timestamp
-	os.Rename(lw.basePath, rotatedPath)
+	if err := os.Rename(lw.basePath, rotatedPath); err != nil {
+		return err
+	}
 
 	// Open new file
 	file, err := os.OpenFile(lw.basePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)

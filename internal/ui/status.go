@@ -56,7 +56,7 @@ func (sl *StatusLine) Update(out *os.File, sess *session.Session) {
 	// Move cursor to bottom line and clear it
 	MoveCursor(out, getTerminalHeight(out), 1)
 	ClearLine(out)
-	fmt.Fprint(out, status)
+	_, _ = fmt.Fprint(out, status)
 
 	sl.lastUpdate = time.Now()
 	sl.lastRendered = status
@@ -165,7 +165,7 @@ func getLoadAverage() string {
 
 // ShowWindowList displays a list of windows
 func ShowWindowList(out *os.File, sess *session.Session) {
-	fmt.Fprint(out, "\r\nWindow List:\r\n")
+	_, _ = fmt.Fprintf(out, "\r\nWindow List:\r\n")
 	for i, win := range sess.Windows {
 		marker := " "
 		if i == sess.CurrentWindow {
@@ -175,15 +175,15 @@ func ShowWindowList(out *os.File, sess *session.Session) {
 		if title == "" {
 			title = win.CmdPath
 		}
-		fmt.Fprintf(out, "%s %s: %s\r\n", marker, win.Number, title)
+		_, _ = fmt.Fprintf(out, "%s %s: %s\r\n", marker, win.Number, title)
 	}
-	fmt.Fprint(out, "\r\nPress any key to continue...\r\n")
+	_, _ = fmt.Fprintf(out, "\r\nPress any key to continue...\r\n")
 }
 
 // ShowInteractiveWindowList displays an interactive window list for selection
 func ShowInteractiveWindowList(in, out *os.File, sess *session.Session) error {
 	// Display window list
-	fmt.Fprint(out, "\r\nWindow List (select with number/name or arrow keys):\r\n")
+	_, _ = fmt.Fprintf(out, "\r\nWindow List (select with number/name or arrow keys):\r\n")
 	for i, win := range sess.Windows {
 		marker := " "
 		if i == sess.CurrentWindow {
@@ -193,9 +193,9 @@ func ShowInteractiveWindowList(in, out *os.File, sess *session.Session) error {
 		if title == "" {
 			title = win.CmdPath
 		}
-		fmt.Fprintf(out, "%s %s: %s\r\n", marker, win.Number, title)
+		_, _ = fmt.Fprintf(out, "%s %s: %s\r\n", marker, win.Number, title)
 	}
-	fmt.Fprint(out, "\r\nSelect window (number/name/Enter to cancel): ")
+	_, _ = fmt.Fprintf(out, "\r\nSelect window (number/name/Enter to cancel): ")
 
 	// Read input
 	buf := make([]byte, 1)
@@ -212,7 +212,7 @@ func ShowInteractiveWindowList(in, out *os.File, sess *session.Session) error {
 		if b == '\n' || b == '\r' {
 			if len(input) == 0 {
 				// Cancel - no input
-				fmt.Fprint(out, "\r\n")
+				_, _ = fmt.Fprintf(out, "\r\n")
 				return nil
 			}
 			break
@@ -220,7 +220,7 @@ func ShowInteractiveWindowList(in, out *os.File, sess *session.Session) error {
 
 		// Handle Escape
 		if b == 0x1b { // ESC
-			fmt.Fprint(out, "\r\n")
+			_, _ = fmt.Fprintf(out, "\r\n")
 			return nil
 		}
 
@@ -228,7 +228,7 @@ func ShowInteractiveWindowList(in, out *os.File, sess *session.Session) error {
 		if b == '\b' || b == 0x7f {
 			if len(input) > 0 {
 				input = input[:len(input)-1]
-				fmt.Fprint(out, "\b \b")
+				_, _ = fmt.Fprintf(out, "\b \b")
 			}
 			continue
 		}
@@ -236,7 +236,7 @@ func ShowInteractiveWindowList(in, out *os.File, sess *session.Session) error {
 		// Handle printable characters
 		if b >= 32 && b < 127 {
 			input = append(input, b)
-			fmt.Fprint(out, string(b))
+			_, _ = fmt.Fprint(out, string(b))
 		}
 	}
 
@@ -249,12 +249,12 @@ func ShowInteractiveWindowList(in, out *os.File, sess *session.Session) error {
 	// Try to switch to selected window
 	err := sess.SwitchToWindow(selection)
 	if err != nil {
-		fmt.Fprintf(out, "\r\nInvalid window: %s\r\n", selection)
+		_, _ = fmt.Fprintf(out, "\r\nInvalid window: %s\r\n", selection)
 		// Wait a bit for user to see error
 		time.Sleep(1 * time.Second)
 		return nil
 	}
 
-	fmt.Fprint(out, "\r\n")
+	_, _ = fmt.Fprintf(out, "\r\n")
 	return nil
 }

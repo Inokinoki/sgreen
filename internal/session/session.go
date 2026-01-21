@@ -57,7 +57,9 @@ func init() {
 		homeDir = os.TempDir()
 	}
 	sessionsDir = filepath.Join(homeDir, ".sgreen", "sessions")
-	os.MkdirAll(sessionsDir, 0755)
+	if err := os.MkdirAll(sessionsDir, 0755); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "warning: failed to create sessions directory: %v\n", err)
+	}
 }
 
 // CurrentUser returns the current username for permission checks.
@@ -83,7 +85,7 @@ func NewWithConfig(id, cmdPath string, args []string, config *Config) (*Session,
 		return nil, fmt.Errorf("session name cannot be empty")
 	}
 	for _, r := range id {
-		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_') {
+		if !isValidSessionChar(r) {
 			return nil, fmt.Errorf("invalid session name: only alphanumeric characters, dash, and underscore allowed")
 		}
 	}
@@ -194,7 +196,7 @@ func NewWithConfig(id, cmdPath string, args []string, config *Config) (*Session,
 	if err := sess.save(); err != nil {
 		// Clean up on error
 		delete(sessions, id)
-		ptyProc.Kill()
+		_ = ptyProc.Kill()
 		return nil, fmt.Errorf("failed to save session: %w", err)
 	}
 
@@ -234,7 +236,7 @@ func Load(id string) (*Session, error) {
 	// Try to reconnect to the PTY if we have a path and process is still alive
 	if sess.PtsPath != "" && isProcessAlive(sess.Pid) {
 		if err := sess.ReconnectPTY(); err != nil {
-			// Reconnection failed, but continue with session metadata
+			_ = err
 		}
 	}
 
@@ -348,7 +350,9 @@ func List() []*Session {
 		if sess.PTYProcess != nil && !sess.PTYProcess.IsAlive() {
 			// Try to reconnect if we have a pts path
 			if sess.PtsPath != "" && isProcessAlive(sess.Pid) {
-				sess.ReconnectPTY()
+				if err := sess.ReconnectPTY(); err != nil {
+					_ = err
+				}
 			}
 		}
 		result = append(result, sess)
@@ -369,7 +373,9 @@ func List() []*Session {
 			}
 			// Also try old method for backward compatibility
 			if !hasAliveWindow && sess.PtsPath != "" && isProcessAlive(sess.Pid) {
-				sess.ReconnectPTY()
+				if err := sess.ReconnectPTY(); err != nil {
+					_ = err
+				}
 			}
 			result = append(result, sess)
 		}
@@ -456,7 +462,7 @@ func (s *Session) save() error {
 
 	// Atomic rename
 	if err := os.Rename(tmpPath, filePath); err != nil {
-		os.Remove(tmpPath)
+		_ = os.Remove(tmpPath)
 		if isResourceExhausted(err) {
 			return fmt.Errorf("resource exhaustion while renaming session file: %w", err)
 		}
@@ -481,7 +487,7 @@ func loadFromDisk(id string) (*Session, error) {
 	if err := json.Unmarshal(data, &sess); err != nil {
 		// Try to recover by backing up corrupted file
 		backupPath := filePath + ".corrupted"
-		os.WriteFile(backupPath, data, 0644) // Ignore errors
+		_ = os.WriteFile(backupPath, data, 0644)
 		return nil, fmt.Errorf("failed to parse session file (backed up to %s): %w", backupPath, err)
 	}
 
@@ -513,13 +519,13 @@ func Delete(id string) error {
 	// Kill all processes in all windows
 	for _, win := range sess.Windows {
 		if win.GetPTYProcess() != nil {
-			win.GetPTYProcess().Kill()
+			_ = win.GetPTYProcess().Kill()
 		}
 	}
 
 	// Also kill legacy PTY process if exists
 	if sess.PTYProcess != nil {
-		sess.PTYProcess.Kill()
+		_ = sess.PTYProcess.Kill()
 	}
 
 	// Remove from memory
@@ -562,7 +568,7 @@ func CleanupOrphanedProcesses() error {
 					hasAliveProcess = true
 					// Try to kill orphaned process
 					if proc, err := os.FindProcess(win.Pid); err == nil {
-						proc.Kill()
+						_ = proc.Kill()
 					}
 				}
 			}
@@ -571,14 +577,14 @@ func CleanupOrphanedProcesses() error {
 			if sess.PtsPath != "" && isProcessAlive(sess.Pid) {
 				hasAliveProcess = true
 				if proc, err := os.FindProcess(sess.Pid); err == nil {
-					proc.Kill()
+					_ = proc.Kill()
 				}
 			}
 
 			// If no alive processes, remove session file
 			if !hasAliveProcess {
 				filePath := filepath.Join(sessionsDir, sess.ID+".json")
-				os.Remove(filePath) // Ignore errors
+				_ = os.Remove(filePath)
 			}
 		}
 	}
@@ -593,7 +599,7 @@ func cleanupSessionOrphans(sess *Session) {
 		if win.GetPTYProcess() != nil && !win.GetPTYProcess().IsAlive() {
 			// Process is dead, try to kill it anyway to be sure
 			if proc, err := os.FindProcess(win.Pid); err == nil {
-				proc.Kill()
+				_ = proc.Kill()
 			}
 		}
 	}
@@ -601,7 +607,7 @@ func cleanupSessionOrphans(sess *Session) {
 	// Clean up legacy PTY
 	if sess.PTYProcess != nil && !sess.PTYProcess.IsAlive() {
 		if proc, err := os.FindProcess(sess.Pid); err == nil {
-			proc.Kill()
+			_ = proc.Kill()
 		}
 	}
 }
@@ -734,7 +740,7 @@ func (s *Session) SwitchToWindow(number string) error {
 	}
 
 	// Find window
-	var foundIdx int = -1
+	foundIdx := -1
 	for i, win := range s.Windows {
 		if win.ID == id {
 			foundIdx = i
@@ -841,7 +847,7 @@ func (s *Session) Rename(newID string) error {
 
 	// Validate session name (alphanumeric, dash, underscore)
 	for _, r := range newID {
-		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_') {
+		if !isValidSessionChar(r) {
 			return fmt.Errorf("invalid session name: only alphanumeric characters, dash, and underscore allowed")
 		}
 	}
@@ -1012,7 +1018,7 @@ func ExecuteCommand(sess *Session, command string) error {
 	case "quit", "exit":
 		// Quit the session
 		if sess.PTYProcess != nil {
-			sess.PTYProcess.Kill()
+			_ = sess.PTYProcess.Kill()
 		}
 		return Delete(sess.ID)
 	case "detach":
@@ -1025,4 +1031,11 @@ func ExecuteCommand(sess *Session, command string) error {
 		// Unknown command
 		return fmt.Errorf("unknown command: %s", cmd)
 	}
+}
+
+func isValidSessionChar(r rune) bool {
+	return (r >= 'a' && r <= 'z') ||
+		(r >= 'A' && r <= 'Z') ||
+		(r >= '0' && r <= '9') ||
+		r == '-' || r == '_'
 }
