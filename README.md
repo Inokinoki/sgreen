@@ -5,9 +5,10 @@ A simplified screen-like terminal multiplexer written in pure Go, compatible wit
 ## Features
 
 - Pure Go implementation (no CGO dependencies, no libc dependency)
-- Screen-compatible commands: `new`, `attach`, `list`
+- GNU screen-compatible command-line interface (`-r`, `-S`, `-ls`, `-d`)
 - Detach with `Ctrl+A, d` (screen-compatible escape sequence)
 - Session persistence across terminal sessions
+- Cross-process session reattachment (reattach to sessions created in other terminals)
 - Cross-compilation support for:
   - Linux (amd64, arm64, armv7)
   - Windows (amd64, arm64)
@@ -59,25 +60,48 @@ CGO_ENABLED=0 GOOS=freebsd GOARCH=amd64 go build -ldflags="-w -s" -o build/sgree
 
 ## Usage
 
+sgreen is compatible with GNU screen's command-line interface.
+
 ### Create a new session
 
 ```bash
-sgreen new --id mysession -- /bin/bash
+# Create a new session (default command is /bin/sh)
+sgreen
+
+# Create a new session with a specific command
+sgreen /bin/bash
+
+# Create a named session
+sgreen -S mysession /bin/bash
 ```
 
 ### Attach to a session
 
 ```bash
-sgreen attach --id mysession
-```
+# Reattach to a detached session (auto-selects if only one)
+sgreen -r
 
-Press `Ctrl+A, d` to detach from the session.
+# Reattach to a specific session
+sgreen -r mysession
+```
 
 ### List all sessions
 
 ```bash
-sgreen list
+sgreen -ls
+# or
+sgreen -list
 ```
+
+### Detach a session
+
+```bash
+# Detach a session (from within the session, press Ctrl+A, d)
+# Or from command line:
+sgreen -d [session]
+```
+
+Press `Ctrl+A, d` to detach from a session (screen-compatible).
 
 ### Running
 
@@ -116,4 +140,5 @@ make clean
 ## License
 
 MIT License - see LICENSE file for details.
+
 
