@@ -322,6 +322,7 @@ func handleNew(sessionName string, cmdArgs []string, config *Config) {
 		// Use default name based on PID and timestamp
 		sessionName = fmt.Sprintf("%d.%d", os.Getpid(), time.Now().Unix())
 	}
+	requestedName := sessionName
 
 	// Determine shell
 	shellPath := "/bin/sh"
@@ -389,6 +390,7 @@ func handleNew(sessionName string, cmdArgs []string, config *Config) {
 
 	// Check if session already exists
 	existingSess, err := session.Load(sessionName)
+	needsPidRename := false
 	if err == nil && existingSess != nil {
 		if sessionHasAttachablePTY(existingSess) {
 			// Session exists, try to attach to it instead
@@ -402,9 +404,10 @@ func handleNew(sessionName string, cmdArgs []string, config *Config) {
 		// Session exists but has no usable PTY; create a new unique session name.
 		newName := nextAvailableSessionName(sessionName)
 		if !config.Quiet {
-			_, _ = fmt.Fprintf(os.Stderr, "Session %s has no active PTY. Creating new session %s.\n", sessionName, newName)
+			_, _ = fmt.Fprintf(os.Stderr, "Session %s has no active PTY. Creating new session with PID prefix.\n", sessionName)
 		}
 		sessionName = newName
+		needsPidRename = true
 	}
 
 	// Create new session with config
@@ -419,6 +422,18 @@ func handleNew(sessionName string, cmdArgs []string, config *Config) {
 	if err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "Error creating session: %v\n", err)
 		os.Exit(1)
+	}
+	if needsPidRename {
+		pidName := fmt.Sprintf("%d-%s", sess.Pid, requestedName)
+		if pidName != sessionName {
+			if err := sess.Rename(pidName); err != nil {
+				if !config.Quiet {
+					_, _ = fmt.Fprintf(os.Stderr, "Warning: created session %s, but failed to rename to %s: %v\n", sessionName, pidName, err)
+				}
+			} else if !config.Quiet {
+				_, _ = fmt.Fprintf(os.Stderr, "Session created as %s.\n", pidName)
+			}
+		}
 	}
 
 	// Attach to the new session
@@ -849,6 +864,10 @@ func handleList() {
 // printSessionList prints sessions in screen-compatible format
 func printSessionList(sessions []*session.Session) {
 	// Screen format: "PID.TTY.HOST (Attached|Detached) DATE TIME (SESSIONNAME)"
+	nameCounts := make(map[string]int, len(sessions))
+	for _, sess := range sessions {
+		nameCounts[sess.ID]++
+	}
 	for _, sess := range sessions {
 		status := "Detached"
 		ptyProc := sess.GetPTYProcess()
@@ -875,8 +894,18 @@ func printSessionList(sessions []*session.Session) {
 		dateStr := sess.CreatedAt.Format("01/02/06")
 		timeStr := sess.CreatedAt.Format("15:04:05")
 
+		displayName := sess.ID
+		pidPrefix := strconv.Itoa(sess.Pid) + "-"
+		baseName := sess.ID
+		if strings.HasPrefix(sess.ID, pidPrefix) {
+			baseName = strings.TrimPrefix(sess.ID, pidPrefix)
+		}
+		if strings.HasPrefix(sess.ID, pidPrefix) || nameCounts[sess.ID] > 1 {
+			displayName = fmt.Sprintf("%d.%s", sess.Pid, baseName)
+		}
+
 		fmt.Printf("\t%d.%s.%s\t(%s)\t%s %s\t(%s)\n",
-			sess.Pid, tty, hostname, status, dateStr, timeStr, sess.ID)
+			sess.Pid, tty, hostname, status, dateStr, timeStr, displayName)
 	}
 }
 

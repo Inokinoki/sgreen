@@ -829,12 +829,12 @@ func (s *Session) Rename(newID string) error {
 	}
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	// Check if new name already exists
 	sessionsMu.RLock()
 	if _, exists := sessions[newID]; exists {
 		sessionsMu.RUnlock()
+		s.mu.Unlock()
 		return fmt.Errorf("session %s already exists", newID)
 	}
 	sessionsMu.RUnlock()
@@ -849,15 +849,18 @@ func (s *Session) Rename(newID string) error {
 	s.ID = newID
 	sessions[newID] = s
 	sessionsMu.Unlock()
+	s.mu.Unlock()
 
 	// Rename file on disk
 	if err := os.Rename(oldPath, newPath); err != nil {
 		// Rollback in-memory change
+		s.mu.Lock()
 		sessionsMu.Lock()
 		delete(sessions, newID)
 		s.ID = oldID
 		sessions[oldID] = s
 		sessionsMu.Unlock()
+		s.mu.Unlock()
 		return fmt.Errorf("failed to rename session file: %w", err)
 	}
 
