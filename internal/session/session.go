@@ -213,7 +213,6 @@ func Load(id string) (*Session, error) {
 		if sess.PTYProcess != nil && !sess.PTYProcess.IsAlive() {
 			// Process died, try to reconnect if we have a pts path
 			if sess.PtsPath != "" {
-				sessionsMu.RUnlock()
 				sessionsMu.Lock()
 				if err := sess.ReconnectPTY(); err == nil {
 					sessionsMu.Unlock()
@@ -222,7 +221,6 @@ func Load(id string) (*Session, error) {
 				sessionsMu.Unlock()
 			}
 		}
-		sessionsMu.RUnlock()
 		return sess, nil
 	}
 	sessionsMu.RUnlock()
@@ -381,30 +379,8 @@ func List() []*Session {
 		}
 	}
 
-	// Clean up dead sessions from result
-	cleanedResult := make([]*Session, 0, len(result))
-	for _, sess := range result {
-		hasAliveWindow := false
-		if len(sess.Windows) > 0 {
-			for _, win := range sess.Windows {
-				if win.GetPTYProcess() != nil && win.GetPTYProcess().IsAlive() {
-					hasAliveWindow = true
-					break
-				}
-			}
-		} else {
-			// Fallback check
-			if sess.GetPTYProcess() != nil && sess.GetPTYProcess().IsAlive() {
-				hasAliveWindow = true
-			}
-		}
-		if hasAliveWindow || len(sess.Windows) == 0 {
-			// Keep session if it has alive windows or is a legacy session
-			cleanedResult = append(cleanedResult, sess)
-		}
-	}
-
-	return cleanedResult
+	// Keep dead sessions in the list; -wipe removes them explicitly.
+	return result
 }
 
 // loadAllFromDisk loads all session files from disk

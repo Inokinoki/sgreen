@@ -69,10 +69,8 @@ func AttachWithConfig(in *os.File, out *os.File, errOut *os.File, sess *session.
 		enableBracketedPaste(out)
 		defer disableBracketedPaste(out)
 	}
-	if caps.SupportsMouse {
-		enableMouseTracking(out)
-		defer disableMouseTracking(out)
-	}
+	// Mouse tracking is intentionally disabled: we don't parse mouse reports yet,
+	// and enabling it causes raw click bytes to appear in the session.
 
 	// Main attach loop - handles window switching (Windows version without SIGWINCH)
 	return attachLoopWindows(in, out, errOut, sess, config)

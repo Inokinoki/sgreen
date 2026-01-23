@@ -390,12 +390,21 @@ func handleNew(sessionName string, cmdArgs []string, config *Config) {
 	// Check if session already exists
 	existingSess, err := session.Load(sessionName)
 	if err == nil && existingSess != nil {
-		// Session exists, try to attach to it instead
-		if !config.Quiet {
-			_, _ = fmt.Fprintf(os.Stderr, "Session %s already exists. Attaching...\n", sessionName)
+		if sessionHasAttachablePTY(existingSess) {
+			// Session exists, try to attach to it instead
+			if !config.Quiet {
+				_, _ = fmt.Fprintf(os.Stderr, "Session %s already exists. Attaching...\n", sessionName)
+			}
+			attachToSession(existingSess, config)
+			return
 		}
-		attachToSession(existingSess, config)
-		return
+
+		// Session exists but has no usable PTY; create a new unique session name.
+		newName := nextAvailableSessionName(sessionName)
+		if !config.Quiet {
+			_, _ = fmt.Fprintf(os.Stderr, "Session %s has no active PTY. Creating new session %s.\n", sessionName, newName)
+		}
+		sessionName = newName
 	}
 
 	// Create new session with config
@@ -414,6 +423,33 @@ func handleNew(sessionName string, cmdArgs []string, config *Config) {
 
 	// Attach to the new session
 	attachToSession(sess, config)
+}
+
+func sessionHasAttachablePTY(sess *session.Session) bool {
+	if sess == nil {
+		return false
+	}
+	if ptyProc := sess.GetPTYProcess(); ptyProc != nil && ptyProc.IsAlive() {
+		return true
+	}
+	if sess.PtsPath != "" {
+		if err := sess.ReconnectPTY(); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+func nextAvailableSessionName(base string) string {
+	for i := 0; ; i++ {
+		candidate := base
+		if i > 0 {
+			candidate = fmt.Sprintf("%s-%d", base, i)
+		}
+		if sess, err := session.Load(candidate); err != nil || sess == nil {
+			return candidate
+		}
+	}
 }
 
 // handleReattachWithConfig reattaches with configuration

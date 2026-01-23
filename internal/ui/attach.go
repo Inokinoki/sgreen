@@ -73,10 +73,8 @@ func AttachWithConfig(in *os.File, out *os.File, errOut *os.File, sess *session.
 		enableBracketedPaste(out)
 		defer disableBracketedPaste(out)
 	}
-	if caps.SupportsMouse {
-		enableMouseTracking(out)
-		defer disableMouseTracking(out)
-	}
+	// Mouse tracking is intentionally disabled: we don't parse mouse reports yet,
+	// and enabling it causes raw click bytes to appear in the session.
 
 	// Show startup message if enabled
 	if config.StartupMessage {

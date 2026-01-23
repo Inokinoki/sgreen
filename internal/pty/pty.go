@@ -1,11 +1,13 @@
 package pty
 
 import (
+	"errors"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/creack/pty"
 )
@@ -24,36 +26,47 @@ func Start(cmdPath string, args []string) (*PTYProcess, error) {
 
 // StartWithEnv creates a new PTY process with custom environment variables
 func StartWithEnv(cmdPath string, args []string, envOverrides map[string]string) (*PTYProcess, error) {
-	cmd := exec.Command(cmdPath, args...)
+	buildCmd := func(withProcessGroup bool) *exec.Cmd {
+		cmd := exec.Command(cmdPath, args...)
+		if withProcessGroup {
+			// Set process group management (Unix only)
+			setProcessGroup(cmd)
+		}
 
-	// Set process group management (Unix only)
-	setProcessGroup(cmd)
+		// Start with current environment
+		cmd.Env = os.Environ()
 
-	// Start with current environment
-	cmd.Env = os.Environ()
-
-	// Apply environment overrides
-	if envOverrides != nil {
-		envMap := make(map[string]string)
-		// Parse existing environment
-		for _, env := range cmd.Env {
-			parts := strings.SplitN(env, "=", 2)
-			if len(parts) == 2 {
-				envMap[parts[0]] = parts[1]
+		// Apply environment overrides
+		if envOverrides != nil {
+			envMap := make(map[string]string)
+			// Parse existing environment
+			for _, env := range cmd.Env {
+				parts := strings.SplitN(env, "=", 2)
+				if len(parts) == 2 {
+					envMap[parts[0]] = parts[1]
+				}
+			}
+			// Apply overrides
+			for key, value := range envOverrides {
+				envMap[key] = value
+			}
+			// Rebuild environment slice
+			cmd.Env = make([]string, 0, len(envMap))
+			for key, value := range envMap {
+				cmd.Env = append(cmd.Env, key+"="+value)
 			}
 		}
-		// Apply overrides
-		for key, value := range envOverrides {
-			envMap[key] = value
-		}
-		// Rebuild environment slice
-		cmd.Env = make([]string, 0, len(envMap))
-		for key, value := range envMap {
-			cmd.Env = append(cmd.Env, key+"="+value)
-		}
+
+		return cmd
 	}
 
+	cmd := buildCmd(true)
 	ptyFile, err := pty.Start(cmd)
+	if err != nil && errors.Is(err, syscall.EPERM) {
+		// Some sandboxes deny setpgid; retry without process group management.
+		cmd = buildCmd(false)
+		ptyFile, err = pty.Start(cmd)
+	}
 	if err != nil {
 		return nil, err
 	}
