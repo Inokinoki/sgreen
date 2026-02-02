@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -51,6 +52,9 @@ type Config struct {
 }
 
 func main() {
+	if runDetachKeeperIfRequested() {
+		return
+	}
 	// Parse flags
 	var (
 		reattach           = flag.Bool("r", false, "Reattach to a detached session")
@@ -339,6 +343,9 @@ func handleNew(sessionName string, cmdArgs []string, config *Config) {
 	if len(cmdArgs) > 0 {
 		cmdPath = cmdArgs[0]
 		args = cmdArgs[1:]
+	}
+	if len(cmdArgs) == 0 {
+		args = ensureInteractiveShellArgs(cmdPath, args)
 	}
 
 	// Check STY environment variable unless -m flag is set
@@ -713,6 +720,14 @@ func attachToSession(sess *session.Session, config *Config) {
 
 	// Build attach config from main config
 	attachConfig := ui.DefaultAttachConfig()
+	startedKeeper := false
+	onDetach := func(detachSess *session.Session) {
+		if startedKeeper {
+			return
+		}
+		startedKeeper = true
+		startDetachKeeper(detachSess)
+	}
 	if config != nil {
 		// Parse command character
 		if config.CommandChar != "" {
@@ -769,12 +784,106 @@ func attachToSession(sess *session.Session, config *Config) {
 		// Shell title format
 		attachConfig.ShellTitle = config.ShellTitle
 	}
+	attachConfig.OnDetach = onDetach
 
 	err := ui.AttachWithConfig(os.Stdin, os.Stdout, os.Stderr, sess, attachConfig)
-	if err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "Error attaching to session: %v\n", err)
-		os.Exit(1)
+	if err == nil || err == ui.ErrDetach {
+		onDetach(sess)
+		return
 	}
+	_, _ = fmt.Fprintf(os.Stderr, "Error attaching to session: %v\n", err)
+	os.Exit(1)
+}
+
+func runDetachKeeperIfRequested() bool {
+	if os.Getenv("SGREEN_DETACH_KEEPER") != "1" {
+		return false
+	}
+	debugDetachKeeper("keeper: starting")
+	fdStr := os.Getenv("SGREEN_HOLD_FD")
+	fd, err := strconv.Atoi(fdStr)
+	if err != nil || fd <= 0 {
+		debugDetachKeeper("keeper: invalid SGREEN_HOLD_FD=%q", fdStr)
+		return true
+	}
+	readyStr := os.Getenv("SGREEN_READY_FD")
+	readyFD, readyErr := strconv.Atoi(readyStr)
+	if readyErr == nil && readyFD > 0 {
+		if readyFile := os.NewFile(uintptr(readyFD), "sgreen-keeper-ready"); readyFile != nil {
+			_, _ = readyFile.Write([]byte("ready\n"))
+			_ = readyFile.Close()
+		}
+	}
+	file := os.NewFile(uintptr(fd), "sgreen-pty-master")
+	if file == nil {
+		debugDetachKeeper("keeper: failed to open fd=%d", fd)
+		return true
+	}
+	debugDetachKeeper("keeper: holding fd=%d", fd)
+	// Keep the PTY master open so detached processes do not receive SIGHUP.
+	select {}
+}
+
+func startDetachKeeper(sess *session.Session) {
+	if sess == nil {
+		return
+	}
+	ptyProc := sess.GetPTYProcess()
+	if ptyProc == nil {
+		if win := sess.GetCurrentWindow(); win != nil {
+			ptyProc = win.GetPTYProcess()
+		}
+	}
+	if ptyProc == nil || ptyProc.Pty == nil {
+		debugDetachKeeper("keeper: no PTY to hold for session %q", sess.ID)
+		return
+	}
+	selfPath, err := os.Executable()
+	if err != nil {
+		debugDetachKeeper("keeper: failed to get executable path: %v", err)
+		return
+	}
+	cmd := exec.Command(selfPath)
+	readyR, readyW, err := os.Pipe()
+	if err != nil {
+		debugDetachKeeper("keeper: failed to create ready pipe: %v", err)
+		return
+	}
+	defer readyR.Close()
+	cmd.Env = append(os.Environ(),
+		"SGREEN_DETACH_KEEPER=1",
+		"SGREEN_HOLD_FD=3",
+		"SGREEN_READY_FD=4",
+	)
+	cmd.Stdin = nil
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	cmd.ExtraFiles = []*os.File{ptyProc.Pty, readyW}
+	setDetachSysProcAttr(cmd)
+	if err := cmd.Start(); err != nil {
+		debugDetachKeeper("keeper: failed to start: %v", err)
+		_ = readyW.Close()
+		return
+	}
+	_ = readyW.Close()
+	waitForKeeperReady(readyR)
+	debugDetachKeeper("keeper: started pid=%d for session %q", cmd.Process.Pid, sess.ID)
+}
+
+func debugDetachKeeper(format string, args ...any) {
+	if os.Getenv("SGREEN_KEEPER_DEBUG") == "" {
+		return
+	}
+	_, _ = fmt.Fprintf(os.Stderr, format+"\n", args...)
+}
+
+func waitForKeeperReady(readyR *os.File) {
+	if readyR == nil {
+		return
+	}
+	buf := make([]byte, 16)
+	_ = readyR.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+	_, _ = readyR.Read(buf)
 }
 
 // parseCommandChar parses a command character string (e.g., "^A" or "\x01")
@@ -873,8 +982,11 @@ func printSessionList(sessions []*session.Session) {
 		ptyProc := sess.GetPTYProcess()
 		if ptyProc != nil && ptyProc.IsAlive() {
 			status = "Attached"
-		} else if !isProcessAliveByPID(sess.Pid) {
+		} else if !sessionHasAliveProcess(sess) {
 			status = "Dead"
+		}
+		if status == "Dead" {
+			continue
 		}
 
 		// Format: PID.TTY (Status) DATE TIME (SESSIONNAME)
@@ -915,7 +1027,7 @@ func findDetachedSessions(sessions []*session.Session) []*session.Session {
 	for _, sess := range sessions {
 		ptyProc := sess.GetPTYProcess()
 		if ptyProc == nil || !ptyProc.IsAlive() {
-			if isProcessAliveByPID(sess.Pid) {
+			if sessionHasAliveProcess(sess) {
 				detached = append(detached, sess)
 			}
 		}
@@ -942,6 +1054,33 @@ func isProcessAliveByPID(pid int) bool {
 	}
 	err = process.Signal(syscall.Signal(0))
 	return err == nil
+}
+
+func ensureInteractiveShellArgs(cmdPath string, args []string) []string {
+	if len(args) > 0 {
+		return args
+	}
+	switch strings.ToLower(filepath.Base(cmdPath)) {
+	case "zsh", "bash", "sh", "ksh", "fish":
+		return []string{"-i"}
+	default:
+		return args
+	}
+}
+
+func sessionHasAliveProcess(sess *session.Session) bool {
+	if sess == nil {
+		return false
+	}
+	for _, win := range sess.Windows {
+		if win == nil {
+			continue
+		}
+		if win.Pid > 0 && isProcessAliveByPID(win.Pid) {
+			return true
+		}
+	}
+	return sess.Pid > 0 && isProcessAliveByPID(sess.Pid)
 }
 
 // findDefaultConfigFile finds the default config file location

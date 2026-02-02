@@ -78,6 +78,7 @@ func AttachWithConfig(in *os.File, out *os.File, errOut *os.File, sess *session.
 
 // attachLoopWindows is the Windows version of attachLoop (no SIGWINCH support)
 func attachLoopWindows(in *os.File, out *os.File, errOut *os.File, sess *session.Session, config *AttachConfig) error {
+	debugAttach("attach: start session=%q", sess.ID)
 	// Create scrollback buffers for windows (stored in a map)
 	scrollbackBuffers := make(map[int]*ScrollbackBuffer)
 
@@ -161,7 +162,11 @@ func attachLoopWindows(in *os.File, out *os.File, errOut *os.File, sess *session
 		case err := <-inputDone:
 			if err == ErrDetach {
 				// User detached, this is normal
-				return nil
+				debugAttach("attach: input detach session=%q", sess.ID)
+				if config.OnDetach != nil {
+					config.OnDetach(sess)
+				}
+				return ErrDetach
 			}
 
 			// Check if it's a window command
@@ -178,17 +183,29 @@ func attachLoopWindows(in *os.File, out *os.File, errOut *os.File, sess *session
 			}
 
 			// Other error
+			debugAttach("attach: input error session=%q err=%v", sess.ID, err)
 			return wrapIOError(err)
 
 		case err := <-outputDone:
 			// Output finished (EOF or error)
 			if err == io.EOF {
 				// PTY closed, try to continue with next window or exit
+				debugAttach("attach: output EOF session=%q", sess.ID)
 				return nil
+			}
+			if err != nil {
+				debugAttach("attach: output error session=%q err=%v", sess.ID, err)
 			}
 			return wrapIOError(err)
 		}
 	}
+}
+
+func debugAttach(format string, args ...any) {
+	if os.Getenv("SGREEN_ATTACH_DEBUG") == "" {
+		return
+	}
+	_, _ = fmt.Fprintf(os.Stderr, format+"\n", args...)
 }
 
 const (

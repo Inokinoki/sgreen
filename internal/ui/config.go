@@ -1,5 +1,7 @@
 package ui
 
+import "github.com/inoki/sgreen/internal/session"
+
 // AttachConfig holds configuration for attaching to a session
 type AttachConfig struct {
 	CommandChar     byte              // Command character (default: 0x01 = Ctrl+A)
@@ -26,6 +28,7 @@ type AttachConfig struct {
 	SilenceTimeout  int               // Silence timeout in seconds
 	Bindings        map[string]string // Custom key bindings (key -> command)
 	ShellTitle      string            // Shell title format
+	OnDetach        func(*session.Session)
 }
 
 // DefaultAttachConfig returns default attach configuration
