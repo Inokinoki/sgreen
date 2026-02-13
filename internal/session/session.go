@@ -86,7 +86,7 @@ func NewWithConfig(id, cmdPath string, args []string, config *Config) (*Session,
 	}
 	for _, r := range id {
 		if !isValidSessionChar(r) {
-			return nil, fmt.Errorf("invalid session name: only alphanumeric characters, dash, and underscore allowed")
+			return nil, fmt.Errorf("invalid session name: only alphanumeric characters, dot, dash, and underscore allowed")
 		}
 	}
 
@@ -824,7 +824,7 @@ func (s *Session) Rename(newID string) error {
 	// Validate session name (alphanumeric, dash, underscore)
 	for _, r := range newID {
 		if !isValidSessionChar(r) {
-			return fmt.Errorf("invalid session name: only alphanumeric characters, dash, and underscore allowed")
+			return fmt.Errorf("invalid session name: only alphanumeric characters, dot, dash, and underscore allowed")
 		}
 	}
 
@@ -1016,5 +1016,5 @@ func isValidSessionChar(r rune) bool {
 	return (r >= 'a' && r <= 'z') ||
 		(r >= 'A' && r <= 'Z') ||
 		(r >= '0' && r <= '9') ||
-		r == '-' || r == '_'
+		r == '-' || r == '_' || r == '.'
 }

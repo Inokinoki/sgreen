@@ -346,8 +346,7 @@ func handleSendCommand(sessionName, command string) {
 func handleNew(sessionName string, cmdArgs []string, config *Config) {
 	// Generate session name if not provided
 	if sessionName == "" {
-		// Use default name based on PID and timestamp
-		sessionName = fmt.Sprintf("%d.%d", os.Getpid(), time.Now().Unix())
+		sessionName = defaultSessionName()
 	}
 	requestedName := sessionName
 
@@ -477,7 +476,7 @@ func handleNewDetached(sessionName string, cmdArgs []string, config *Config) {
 	}
 
 	if sessionName == "" {
-		sessionName = fmt.Sprintf("%d.%d", os.Getpid(), time.Now().Unix())
+		sessionName = defaultSessionName()
 	}
 
 	// Determine shell
@@ -1207,6 +1206,59 @@ func normalizeArgs(args []string) []string {
 		}
 	}
 	return normalized
+}
+
+func defaultSessionName() string {
+	// GNU screen default style: <pid>.<tty>.<host>.
+	// If no controlling TTY is available, tty component is empty.
+	tty := sanitizeSessionNameComponent(detectTTYName())
+	host := sanitizeSessionNameComponent(defaultHostName())
+	if host == "" {
+		host = "localhost"
+	}
+	return fmt.Sprintf("%d.%s.%s", os.Getpid(), tty, host)
+}
+
+func defaultHostName() string {
+	host, err := os.Hostname()
+	if err != nil || host == "" {
+		return "localhost"
+	}
+	return host
+}
+
+func detectTTYName() string {
+	link, err := os.Readlink("/dev/fd/0")
+	if err != nil || link == "" {
+		return ""
+	}
+	if !strings.HasPrefix(link, "/dev/") {
+		return ""
+	}
+	base := filepath.Base(link)
+	if base == "" || base == "0" || strings.HasPrefix(base, "fd") {
+		return ""
+	}
+	return base
+}
+
+func sanitizeSessionNameComponent(s string) string {
+	if s == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		if (r >= 'a' && r <= 'z') ||
+			(r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') ||
+			r == '-' || r == '_' || r == '.' {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('-')
+		}
+	}
+	return strings.Trim(b.String(), "-")
 }
 
 // findDetachedSessions finds sessions that are not currently attached

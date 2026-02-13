@@ -120,3 +120,31 @@ func TestScreenSocketDirForDisplay(t *testing.T) {
 		t.Fatalf("screenSocketDirForDisplay() = %q, want %q", got, want)
 	}
 }
+
+func TestDefaultSessionNameUsesValidCharacters(t *testing.T) {
+	name := defaultSessionName()
+	if name == "" {
+		t.Fatalf("defaultSessionName() returned empty name")
+	}
+	for _, r := range name {
+		if (r >= 'a' && r <= 'z') ||
+			(r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') ||
+			r == '-' || r == '_' || r == '.' {
+			continue
+		}
+		t.Fatalf("defaultSessionName() contains invalid char %q in %q", r, name)
+	}
+
+	parts := strings.Split(name, ".")
+	if len(parts) < 3 {
+		t.Fatalf("defaultSessionName() = %q, want at least <pid>.<tty>.<host>", name)
+	}
+	if parts[0] == "" {
+		t.Fatalf("defaultSessionName() missing pid component: %q", name)
+	}
+	host := parts[len(parts)-1]
+	if host == "" {
+		t.Fatalf("defaultSessionName() missing host component: %q", name)
+	}
+}
