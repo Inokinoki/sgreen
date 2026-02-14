@@ -1,0 +1,96 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build Release Artifacts
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            binary: sgreen-linux-amd64
+          - goos: linux
+            goarch: arm64
+            binary: sgreen-linux-arm64
+          - goos: linux
+            goarch: arm
+            goarm: 7
+            binary: sgreen-linux-armv7
+          - goos: windows
+            goarch: amd64
+            binary: sgreen-windows-amd64.exe
+          - goos: windows
+            goarch: arm64
+            binary: sgreen-windows-arm64.exe
+          - goos: darwin
+            goarch: amd64
+            binary: sgreen-darwin-amd64
+          - goos: darwin
+            goarch: arm64
+            binary: sgreen-darwin-arm64
+          - goos: freebsd
+            goarch: amd64
+            binary: sgreen-freebsd-amd64
+          - goos: freebsd
+            goarch: arm64
+            binary: sgreen-freebsd-arm64
+          - goos: android
+            goarch: arm64
+            binary: sgreen-android-arm64
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: "go.mod"
+          cache-dependency-path: go.sum
+
+      - name: Build binary
+        env:
+          CGO_ENABLED: 0
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          GOARM: ${{ matrix.goarm }}
+        run: |
+          mkdir -p dist
+          VERSION="${GITHUB_REF_NAME#v}"
+          go build -ldflags="-w -s -X main.version=${VERSION}" -o dist/${{ matrix.binary }} ./cmd/sgreen
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.binary }}
+          path: dist/${{ matrix.binary }}
+          if-no-files-found: error
+
+  release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Download all release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            dist/*

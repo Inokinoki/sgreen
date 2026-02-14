@@ -17,6 +17,10 @@ import (
 	xterm "golang.org/x/term"
 )
 
+// version is injected at build time via -ldflags "-X main.version=<version>".
+// Defaults to "dev" for local builds.
+var version = "dev"
+
 // Config holds configuration options from command-line flags
 type Config struct {
 	Shell           string
@@ -275,7 +279,7 @@ func main() {
 
 // printVersion prints version information
 func printVersion() {
-	fmt.Println("Screen version 0.1.0 (sgreen)")
+	fmt.Printf("Screen version %s (sgreen)\n", version)
 }
 
 // handleWipe removes dead sessions from the list.
