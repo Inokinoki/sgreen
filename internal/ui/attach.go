@@ -340,8 +340,9 @@ func attachLoop(in *os.File, out *os.File, errOut *os.File, sess *session.Sessio
 								sess.NextWindow()
 								continue
 							}
-							// Last window, exit gracefully
-							return fmt.Errorf("PTY process terminated: %w", err)
+							// Last window ended while attached; mirror screen behavior by
+							// treating this as a normal session end rather than hard error.
+							return nil
 						}
 					}
 				}
@@ -375,7 +376,7 @@ func attachLoop(in *os.File, out *os.File, errOut *os.File, sess *session.Sessio
 								sess.NextWindow()
 								continue
 							}
-							return fmt.Errorf("PTY process terminated: %w", err)
+							return nil
 						}
 					}
 				}
