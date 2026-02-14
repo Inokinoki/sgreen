@@ -1,29 +1,33 @@
 # sgreen
 
-A simplified screen-like terminal multiplexer written in pure Go, compatible with the `screen` command interface.
+A simplified, screen-like terminal multiplexer written in Go, with CLI behavior intentionally aligned with GNU `screen`.
 
 ## Features
 
-- Pure Go implementation (no CGO dependencies, no libc dependency)
-- GNU screen-compatible command-line interface (`-r`, `-S`, `-ls`, `-d`)
-- Detach with `Ctrl+A, d` (screen-compatible escape sequence)
-- Session persistence across terminal sessions
-- Cross-process session reattachment (reattach to sessions created in other terminals)
-- Cross-compilation support for:
+- GNU screen-style CLI for common flows:
+  - attach/reattach: `-r`, `-R`, `-RR`, `-x`
+  - detach/power-detach: `-d`, `-D`, `-d -r`
+  - naming/listing/maintenance: `-S`, `-ls`, `-list`, `-wipe`
+  - command/control: `-X`, `-q`, `-m`
+  - detached start parsing compatible with `-d -m` and `-dmS`
+- Screen-like default auto session naming: `<pid>.<tty>.<host>`
+- Detach key sequence: `Ctrl+A`, then `d`
+- Session persistence and cross-process reattach
+- Cross-compilation targets:
   - Linux (amd64, arm64, armv7)
   - Windows (amd64, arm64)
   - macOS (amd64, arm64)
   - FreeBSD (amd64, arm64)
-  - Android (arm64 only, amd64 requires CGO)
+  - Android (arm64)
 
 ## Requirements
 
-- Go 1.21 or later
-- Make (optional, for using Makefile)
+- Go 1.24 or later
+- Make (optional)
 
 ## Building
 
-### Build for current platform
+### Current platform
 
 ```bash
 make build
@@ -31,114 +35,108 @@ make build
 CGO_ENABLED=0 go build -o build/sgreen ./cmd/sgreen
 ```
 
-### Build for all platforms
+### All targets
 
 ```bash
 make all
 ```
 
-This will create binaries in the `build/` directory for all supported platforms.
-
-### Build for specific platform
-
-```bash
-# Linux amd64
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-w -s" -o build/sgreen-linux-amd64 ./cmd/sgreen
-
-# Windows amd64
-CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags="-w -s" -o build/sgreen-windows-amd64.exe ./cmd/sgreen
-
-# macOS arm64
-CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -ldflags="-w -s" -o build/sgreen-darwin-arm64 ./cmd/sgreen
-
-# Android arm64
-CGO_ENABLED=0 GOOS=android GOARCH=arm64 go build -ldflags="-w -s" -o build/sgreen-android-arm64 ./cmd/sgreen
-
-# FreeBSD amd64
-CGO_ENABLED=0 GOOS=freebsd GOARCH=amd64 go build -ldflags="-w -s" -o build/sgreen-freebsd-amd64 ./cmd/sgreen
-```
-
 ## Usage
 
-sgreen is compatible with GNU screen's command-line interface.
-
-### Create a new session
+### Create sessions
 
 ```bash
-# Create a new session (default command is /bin/sh)
+# Default shell is $SHELL when set, otherwise /bin/sh
 sgreen
 
-# Create a new session with a specific command
-sgreen /bin/bash
-
-# Create a named session
+# Named session
 sgreen -S mysession /bin/bash
+
+# Detached start (GNU screen style)
+sgreen -dmS mysession /bin/sh -c 'sleep 60'
 ```
 
-### Attach to a session
+### Attach / Reattach
 
 ```bash
-# Reattach to a detached session (auto-selects if only one)
 sgreen -r
-
-# Reattach to a specific session
 sgreen -r mysession
+sgreen -R mysession
+sgreen -RR mysession
+sgreen -x mysession
 ```
 
-### List all sessions
+### List / Wipe
 
 ```bash
 sgreen -ls
-# or
 sgreen -list
+sgreen -q -ls
+sgreen -wipe
 ```
 
-### Detach a session
+### Detach / Power-detach
 
 ```bash
-# Detach a session (from within the session, press Ctrl+A, d)
-# Or from command line:
-sgreen -d [session]
+# In session: Ctrl+A, d
+sgreen -d mysession
+sgreen -d -r mysession
+sgreen -D mysession
 ```
 
-Press `Ctrl+A, d` to detach from a session (screen-compatible).
-
-### Running
+### Send a command
 
 ```bash
-make run
-# or
-go run ./cmd/sgreen
+sgreen -X quit -S mysession
+```
+
+### Help / Version
+
+```bash
+sgreen -help
+sgreen -v
 ```
 
 ## Development
 
-### Format code
+### Format
+
 ```bash
 make fmt
+# or
+go fmt ./...
 ```
 
-### Run tests
+### Tests
+
 ```bash
 make test
+# or
+go test ./...
 ```
 
-### Clean build artifacts
+### GNU screen behavior comparison
+
+Requires a local `screen` binary (defaults to `/usr/bin/screen`).
+
 ```bash
-make clean
+go build -o build/sgreen ./cmd/sgreen
+SGREEN_BIN="$(pwd)/build/sgreen" test/behavior/compare_with_gnu_screen.sh
 ```
+
+Report output:
+
+`test/behavior/gnu_screen_comparison_results.md`
 
 ## Notes
 
-- All builds use `CGO_ENABLED=0` to ensure no C dependencies and static linking
-- Binaries are stripped (`-ldflags="-w -s"`) to reduce size
-- Uses `github.com/creack/pty` and `golang.org/x/term` which support pure Go syscalls (no CGO needed)
-- Sessions are stored in `~/.sgreen/sessions/`
-- On macOS, binaries may still link to system libraries (`libSystem.B.dylib`, `libresolv.9.dylib`) which are part of the OS and don't require external C libraries
-- On Linux, binaries are fully static with no external dependencies
+- Session files are stored under `~/.sgreen/sessions/`
+- `SCREENDIR` is respected for screen-style socket/listing path display
+- All CI checks include:
+  - unit/behavior tests (`go test ./...`)
+  - GNU-screen parity comparison on Linux/macOS when `screen` is available
 
 ## License
 
-MIT License - see LICENSE file for details.
-
+MIT License. See `LICENSE`.
 
