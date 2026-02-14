@@ -27,10 +27,11 @@ run_cmd() {
   local cmd="$4"
   local out_file="$5"
   local code_file="$6"
+  local term_value="${TERM:-xterm}"
 
   (
     set +e
-    env HOME="$home_dir" SCREENDIR="$screen_dir" STY="$sty_value" \
+    env HOME="$home_dir" SCREENDIR="$screen_dir" STY="$sty_value" TERM="$term_value" \
       perl -e 'alarm shift @ARGV; exec @ARGV' "$TIMEOUT_SEC" /bin/zsh -lc "$cmd" \
       >"$out_file" 2>&1
     echo "$?" >"$code_file"
@@ -164,7 +165,7 @@ emit_case "UC30" "Sgreen scrollback flag vs screen (-H 100 -ls)" "" "$SGREEN_BIN
 
 # Detached start behavior (GNU screen feature)
 emit_case "UC31" "Detached start via -dmS" "" "$SGREEN_BIN -dmS demo /bin/sh -c 'sleep 1'" "$SCREEN_BIN -dmS demo /bin/sh -c 'sleep 1'"
-emit_case "UC32" "Detached start then list" "" "$SGREEN_BIN -dmS demo /bin/sh -c 'sleep 2'; $SGREEN_BIN -ls" "$SCREEN_BIN -dmS demo /bin/sh -c 'sleep 2'; $SCREEN_BIN -ls"
+emit_case "UC32" "Detached start then list after command exits" "" "$SGREEN_BIN -dmS demo /bin/sh -c 'sleep 1'; sleep 2; $SGREEN_BIN -ls" "$SCREEN_BIN -dmS demo /bin/sh -c 'sleep 1'; sleep 2; $SCREEN_BIN -ls"
 
 # PTY-backed cases (using `script` to allocate a terminal)
 emit_case "UC33" "PTY list with no sessions (-ls)" "" "script -q /dev/null $SGREEN_BIN -ls" "script -q /dev/null $SCREEN_BIN -ls"

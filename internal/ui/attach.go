@@ -722,17 +722,6 @@ func disableAltScreen(out io.Writer) {
 	_, _ = fmt.Fprint(out, "\x1b[?1049l")
 }
 
-// enableMouseTracking enables basic mouse reporting.
-func enableMouseTracking(out io.Writer) {
-	// Enable X10 mouse reporting (press only).
-	_, _ = fmt.Fprint(out, "\x1b[?1000h")
-}
-
-// disableMouseTracking disables mouse reporting.
-func disableMouseTracking(out io.Writer) {
-	_, _ = fmt.Fprint(out, "\x1b[?1000l")
-}
-
 // FlowControlConfig holds flow control configuration
 type FlowControlConfig struct {
 	Enabled   bool

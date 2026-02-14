@@ -11,4 +11,3 @@ import (
 func setDetachSysProcAttr(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 }
-

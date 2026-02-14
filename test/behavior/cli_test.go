@@ -13,29 +13,72 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 )
 
+var (
+	sgreenTestBinPath string
+	sgreenTestBinErr  error
+	sgreenTestBinOnce sync.Once
+)
+
+func moduleRoot(tb testing.TB) string {
+	tb.Helper()
+	_, filename, _, ok := runtime.Caller(0)
+	if !ok {
+		tb.Fatalf("runtime.Caller failed")
+	}
+	pkgDir := filepath.Dir(filename)
+	return filepath.Join(pkgDir, "..", "..")
+}
+
+func ensureSgreenBinary(tb testing.TB) string {
+	tb.Helper()
+	if bin := os.Getenv("SGREEN_BINARY"); bin != "" {
+		return bin
+	}
+
+	modRoot := moduleRoot(tb)
+	defaultBuildPath := filepath.Join(modRoot, "build", "sgreen")
+	if st, err := os.Stat(defaultBuildPath); err == nil && !st.IsDir() {
+		return defaultBuildPath
+	}
+
+	sgreenTestBinOnce.Do(func() {
+		tmpDir, err := os.MkdirTemp("", "sgreen-test-bin-*")
+		if err != nil {
+			sgreenTestBinErr = fmt.Errorf("create temp dir for test binary: %w", err)
+			return
+		}
+
+		outPath := filepath.Join(tmpDir, "sgreen")
+		buildCmd := exec.Command("go", "build", "-o", outPath, "./cmd/sgreen")
+		buildCmd.Dir = modRoot
+		buildCmd.Env = os.Environ()
+		out, err := buildCmd.CombinedOutput()
+		if err != nil {
+			sgreenTestBinErr = fmt.Errorf("build test binary: %w\n%s", err, out)
+			return
+		}
+
+		sgreenTestBinPath = outPath
+	})
+
+	if sgreenTestBinErr != nil {
+		tb.Fatalf("prepare sgreen binary: %v", sgreenTestBinErr)
+	}
+	return sgreenTestBinPath
+}
+
 // sgreenCmd returns the exec.Cmd to run sgreen with the given args.
 // Use SGREEN_BINARY to point to a built binary (e.g. ./build/sgreen).
-// Otherwise uses "go run ./cmd/sgreen" so no prior build is required.
+// Otherwise builds a temporary binary once and reuses it.
 func sgreenCmd(tb testing.TB, args []string) *exec.Cmd {
 	tb.Helper()
-	_, filename, _, _ := runtime.Caller(0)
-	pkgDir := filepath.Dir(filename)
-	modRoot := filepath.Join(pkgDir, "..", "..")
-
-	if bin := os.Getenv("SGREEN_BINARY"); bin != "" {
-		cmd := exec.Command(bin, args...)
-		cmd.Dir = modRoot
-		return cmd
-	}
-	if st, err := os.Stat(filepath.Join(modRoot, "build", "sgreen")); err == nil && !st.IsDir() {
-		cmd := exec.Command(filepath.Join(modRoot, "build", "sgreen"), args...)
-		cmd.Dir = modRoot
-		return cmd
-	}
-	cmd := exec.Command("go", append([]string{"run", "./cmd/sgreen"}, args...)...)
+	modRoot := moduleRoot(tb)
+	bin := ensureSgreenBinary(tb)
+	cmd := exec.Command(bin, args...)
 	cmd.Dir = modRoot
 	return cmd
 }
