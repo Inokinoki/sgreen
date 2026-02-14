@@ -39,6 +39,8 @@ type Config struct {
 	IgnoreSTY       bool
 	OptimalOutput   bool
 	PreselectWindow string
+	WindowTitle     string
+	LoginMode       string
 	Wipe            bool
 	Version         bool
 	SendCommand     string
@@ -99,11 +101,14 @@ func main() {
 		ignoreSTY       = flag.Bool("m", false, "Ignore $STY environment variable")
 		optimalOutput   = flag.Bool("O", false, "Use optimal output mode")
 		preselectWindow = flag.String("p", "", "Preselect a window")
+		windowTitle     = flag.String("t", "", "Set title for default window")
 		quiet           = flag.Bool("q", false, "Quiet startup (suppress messages)")
 		interrupt       = flag.Bool("i", false, "Interrupt output immediately when flow control is on")
 		flowControl     = flag.String("f", "", "Flow control: on, off, or auto")
 		flowControlOff  = flag.Bool("fn", false, "Flow control off")
 		flowControlAuto = flag.Bool("fa", false, "Flow control automatic")
+		loginOn         = flag.Bool("l", false, "Turn login mode on")
+		loginOff        = flag.Bool("ln", false, "Turn login mode off")
 		multiuser       = flag.Bool("x", false, "Attach to a session without detaching it (multiuser)")
 	)
 
@@ -131,6 +136,7 @@ func main() {
 		IgnoreSTY:       *ignoreSTY,
 		OptimalOutput:   *optimalOutput,
 		PreselectWindow: *preselectWindow,
+		WindowTitle:     *windowTitle,
 		Wipe:            *wipe,
 		Version:         *version,
 		SendCommand:     *sendCommand,
@@ -138,6 +144,13 @@ func main() {
 		FlowControl:     *flowControl,
 		Interrupt:       *interrupt,
 		Bindings:        make(map[string]string),
+	}
+
+	if *loginOn {
+		config.LoginMode = "on"
+	}
+	if *loginOff {
+		config.LoginMode = "off"
 	}
 
 	// Handle -fn and -fa flags (screen-compatible)
@@ -187,6 +200,12 @@ func main() {
 		os.Exit(handleList(config.Quiet))
 	}
 
+	// GNU screen requires setuid-root for the owner/session form.
+	if requiresSuidRootForOwnerSession(*reattach, *reattachOrCreate, *reattachOrCreateRR, *multiuser, *sessionName, flag.Args()) {
+		_, _ = fmt.Fprintln(os.Stderr, "Must run suid root for multiuser support.")
+		os.Exit(1)
+	}
+
 	// GNU screen requires a controlling terminal for reattach-style operations.
 	if requiresTerminalForOperation(*reattach, *reattachOrCreate, *reattachOrCreateRR, *multiuser, *detach) &&
 		!xterm.IsTerminal(int(os.Stdin.Fd())) {
@@ -201,10 +220,17 @@ func main() {
 		return
 	}
 
+	// Screen-compatible detached no-fork creation mode: -D -m.
+	detachedCreateNoFork := *powerDetach && *ignoreSTY && !*detach && !*reattach && !*reattachOrCreate && !*reattachOrCreateRR
+	if detachedCreateNoFork {
+		handleNewDetachedNoFork(*sessionName, flag.Args(), config)
+		return
+	}
+
 	// Handle power detach (-D)
 	if *powerDetach {
-		targetSession, cmdArgs := resolveSessionAndCommandArgs(*sessionName, flag.Args())
-		handlePowerDetach(targetSession, cmdArgs, config)
+		targetSession := resolvePowerDetachTarget(*sessionName, flag.Args())
+		handlePowerDetach(targetSession, config)
 		return
 	}
 
@@ -269,8 +295,9 @@ func handleWipe(quiet bool) int {
 	if len(sessions) == 0 {
 		if !quiet {
 			fmt.Printf("No Sockets found in %s.\n", screenSocketDirForDisplay())
+			return 1
 		}
-		return 1
+		return 8
 	}
 	removed := 0
 
@@ -346,7 +373,7 @@ func handleSendCommand(sessionName, command string) {
 	}
 
 	if err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "No screen session found: %s\n", sessionName)
+		_, _ = fmt.Fprintln(os.Stderr, "No screen session found.")
 		os.Exit(1)
 	}
 
@@ -480,6 +507,8 @@ func handleNew(sessionName string, cmdArgs []string, config *Config) {
 		}
 	}
 
+	applyWindowTitle(sess, config)
+
 	// Attach to the new session
 	attachToSession(sess, config)
 }
@@ -540,10 +569,89 @@ func handleNewDetached(sessionName string, cmdArgs []string, config *Config) {
 		_, _ = fmt.Fprintf(os.Stderr, "Error creating session: %v\n", err)
 		os.Exit(1)
 	}
+	applyWindowTitle(sess, config)
 
 	// Keep PTY master alive after this process exits (same mechanism as detach).
 	startDetachKeeper(sess)
 	sess.ForceDetach()
+}
+
+// handleNewDetachedNoFork creates a detached session without spawning a keeper process.
+// This mirrors GNU screen -D -m behavior by waiting until the session command exits.
+func handleNewDetachedNoFork(sessionName string, cmdArgs []string, config *Config) {
+	if config == nil {
+		config = &Config{}
+	}
+
+	if sessionName == "" {
+		sessionName = defaultSessionName()
+	}
+
+	// Determine shell
+	shellPath := "/bin/sh"
+	if config.Shell != "" {
+		shellPath = config.Shell
+	} else if envShell := os.Getenv("SHELL"); envShell != "" {
+		shellPath = envShell
+	}
+
+	cmdPath := shellPath
+	args := cmdArgs
+	if len(cmdArgs) > 0 {
+		cmdPath = cmdArgs[0]
+		args = cmdArgs[1:]
+	}
+	if len(cmdArgs) == 0 {
+		args = ensureInteractiveShellArgs(cmdPath, args)
+	}
+
+	// Load config file when available.
+	configFile := config.ConfigFile
+	if configFile == "" {
+		if found, err := findDefaultConfigFile(); err == nil && found != "" {
+			configFile = found
+		}
+	}
+	if configFile != "" {
+		loadConfigFile(configFile, config)
+	}
+	if config.UTF8 {
+		config.Encoding = "UTF-8"
+	} else if config.Encoding == "" {
+		config.Encoding = detectEncodingFromLocale(false)
+	}
+
+	sessConfig := &session.Config{
+		Term:            config.Term,
+		UTF8:            config.UTF8,
+		Encoding:        config.Encoding,
+		Scrollback:      config.Scrollback,
+		AllCapabilities: config.AllCapabilities,
+	}
+	sess, err := session.NewWithConfig(sessionName, cmdPath, args, sessConfig)
+	if err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "Error creating session: %v\n", err)
+		os.Exit(1)
+	}
+	applyWindowTitle(sess, config)
+
+	ptyProc := sess.GetPTYProcess()
+	sess.ForceDetach()
+	if ptyProc != nil {
+		_ = ptyProc.Wait()
+	}
+}
+
+func applyWindowTitle(sess *session.Session, config *Config) {
+	if sess == nil || config == nil || config.WindowTitle == "" {
+		return
+	}
+	win := sess.GetCurrentWindow()
+	if win == nil {
+		return
+	}
+	win.Title = config.WindowTitle
+	_ = sess.Save()
 }
 
 func sessionHasAttachablePTY(sess *session.Session) bool {
@@ -588,6 +696,18 @@ func handleReattachWithConfig(sessionName string, config *Config) {
 		isSessionAttached,
 	)
 	if errMsg != "" {
+		if config.Quiet && !config.Multiuser {
+			if isNoResumableError(errMsg) {
+				os.Exit(10)
+			}
+			if printList && strings.Contains(errMsg, "There are several detached sessions:") {
+				count := resumableSessionCount(sessions)
+				if count < 2 {
+					count = 2
+				}
+				os.Exit(10 + count)
+			}
+		}
 		_, _ = fmt.Fprintln(os.Stderr, errMsg)
 		if printList {
 			printSessionList(sessions)
@@ -737,17 +857,13 @@ func handleReattachOrCreateRR(sessionName string, cmdArgs []string, config *Conf
 }
 
 // handlePowerDetach implements -D flag: power detach (force detach from elsewhere)
-func handlePowerDetach(sessionName string, cmdArgs []string, config *Config) {
+func handlePowerDetach(sessionName string, config *Config) {
 	sessions := session.List()
+	_ = config
 
 	if len(sessions) == 0 {
-		// No sessions exist, create a new one if command provided
-		if len(cmdArgs) > 0 {
-			handleNew(sessionName, cmdArgs, config)
-		} else {
-			_, _ = fmt.Fprintln(os.Stderr, noDetachableScreenMessage(sessionName))
-			os.Exit(1)
-		}
+		_, _ = fmt.Fprintln(os.Stderr, noDetachableScreenMessage(sessionName))
+		os.Exit(1)
 		return
 	}
 
@@ -757,13 +873,8 @@ func handlePowerDetach(sessionName string, cmdArgs []string, config *Config) {
 	if sessionName != "" {
 		sess, err = session.Load(sessionName)
 		if err != nil {
-			// Session not found, create new one if command provided
-			if len(cmdArgs) > 0 {
-				handleNew(sessionName, cmdArgs, config)
-			} else {
-				_, _ = fmt.Fprintln(os.Stderr, noDetachableScreenMessage(sessionName))
-				os.Exit(1)
-			}
+			_, _ = fmt.Fprintln(os.Stderr, noDetachableScreenMessage(sessionName))
+			os.Exit(1)
 			return
 		}
 	} else {
@@ -1239,6 +1350,64 @@ func resolveSessionAndCommandArgs(flagValue string, args []string) (string, []st
 	return args[0], args[1:]
 }
 
+func resolvePowerDetachTarget(flagValue string, args []string) string {
+	if flagValue != "" {
+		return flagValue
+	}
+	// GNU screen treats "-D <name>" as a named target, but additional
+	// trailing arguments are not command args for -D and should not turn the
+	// operation into a named detach.
+	if len(args) == 1 {
+		return args[0]
+	}
+	return ""
+}
+
+func requiresSuidRootForOwnerSession(reattach bool, reattachOrCreate bool, reattachOrCreateRR bool, multiuser bool, sessionFlag string, args []string) bool {
+	var target string
+	switch {
+	case reattach || multiuser:
+		target = resolveSessionName(sessionFlag, args)
+	case reattachOrCreate || reattachOrCreateRR:
+		target, _ = resolveSessionAndCommandArgs(sessionFlag, args)
+	default:
+		return false
+	}
+	return isOwnerSessionTarget(target)
+}
+
+func isOwnerSessionTarget(name string) bool {
+	if name == "" {
+		return false
+	}
+	parts := strings.SplitN(name, "/", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return false
+	}
+	current := session.CurrentUser()
+	if current == "" {
+		return true
+	}
+	return parts[0] != current
+}
+
+func isNoResumableError(msg string) bool {
+	return strings.HasPrefix(msg, "There is no screen to be resumed")
+}
+
+func resumableSessionCount(sessions []*session.Session) int {
+	count := 0
+	for _, sess := range sessions {
+		if sess == nil {
+			continue
+		}
+		if !isSessionAttached(sess) && sessionHasAliveProcess(sess) {
+			count++
+		}
+	}
+	return count
+}
+
 func normalizeArgs(args []string) []string {
 	normalized := make([]string, 0, len(args))
 	for _, arg := range args {
@@ -1691,6 +1860,7 @@ func printUsage() {
 	fmt.Println("  -s shell       Specify shell program (default: /bin/sh or $SHELL)")
 	fmt.Println("  -c configfile  Use config file instead of default .screenrc")
 	fmt.Println("  -e xy          Set command character (x) and literal escape (y)")
+	fmt.Println("  -t title       Set title for default window")
 	fmt.Println("  -T term        Set TERM environment variable")
 	fmt.Println("  -U             UTF-8 mode")
 	fmt.Println("  -a             Include all capabilities in termcap")
@@ -1710,6 +1880,8 @@ func printUsage() {
 	fmt.Println("  -f [on|off|auto] Flow control")
 	fmt.Println("  -fn            Flow control off")
 	fmt.Println("  -fa            Flow control automatic")
+	fmt.Println("  -l             Turn login mode on")
+	fmt.Println("  -ln            Turn login mode off")
 	fmt.Println("  -i             Interrupt output immediately when flow control is on")
 	fmt.Println("  -O             Use optimal output mode")
 	fmt.Println("  -p window      Preselect a window")

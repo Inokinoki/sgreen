@@ -188,3 +188,64 @@ func TestResolveSessionAndCommandArgs(t *testing.T) {
 		}
 	}
 }
+
+func TestResolvePowerDetachTarget(t *testing.T) {
+	tests := []struct {
+		name      string
+		flagValue string
+		args      []string
+		want      string
+	}{
+		{
+			name:      "explicit flag wins",
+			flagValue: "named",
+			args:      []string{"other", "arg"},
+			want:      "named",
+		},
+		{
+			name: "single positional is target",
+			args: []string{"target"},
+			want: "target",
+		},
+		{
+			name: "multiple positionals are not treated as named target",
+			args: []string{"target", "/bin/sh", "-c", "echo hi"},
+			want: "",
+		},
+		{
+			name: "no args",
+			args: nil,
+			want: "",
+		},
+	}
+
+	for _, tt := range tests {
+		if got := resolvePowerDetachTarget(tt.flagValue, tt.args); got != tt.want {
+			t.Fatalf("%s: resolvePowerDetachTarget(%q, %q) = %q, want %q", tt.name, tt.flagValue, tt.args, got, tt.want)
+		}
+	}
+}
+
+func TestIsOwnerSessionTarget(t *testing.T) {
+	t.Setenv("USER", "alice")
+	t.Setenv("USERNAME", "")
+
+	tests := []struct {
+		name string
+		arg  string
+		want bool
+	}{
+		{name: "empty", arg: "", want: false},
+		{name: "plain name", arg: "demo", want: false},
+		{name: "self owner session", arg: "alice/123.pts.host", want: false},
+		{name: "other owner session", arg: "bob/123.pts.host", want: true},
+		{name: "slash without owner", arg: "/123.pts.host", want: false},
+		{name: "slash without session", arg: "bob/", want: false},
+	}
+
+	for _, tt := range tests {
+		if got := isOwnerSessionTarget(tt.arg); got != tt.want {
+			t.Fatalf("%s: isOwnerSessionTarget(%q) = %v, want %v", tt.name, tt.arg, got, tt.want)
+		}
+	}
+}
