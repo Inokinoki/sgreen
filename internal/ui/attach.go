@@ -73,10 +73,8 @@ func AttachWithConfig(in *os.File, out *os.File, errOut *os.File, sess *session.
 		enableBracketedPaste(out)
 		defer disableBracketedPaste(out)
 	}
-	if caps.SupportsMouse {
-		enableMouseTracking(out)
-		defer disableMouseTracking(out)
-	}
+	// Mouse tracking is intentionally disabled: we don't parse mouse reports yet,
+	// and enabling it causes raw click bytes to appear in the session.
 
 	// Show startup message if enabled
 	if config.StartupMessage {
@@ -100,6 +98,7 @@ func AttachWithConfig(in *os.File, out *os.File, errOut *os.File, sess *session.
 
 // attachLoop is the main loop that handles window switching
 func attachLoop(in *os.File, out *os.File, errOut *os.File, sess *session.Session, config *AttachConfig) error {
+	debugAttach("attach: start session=%q", sess.ID)
 	// Handle window size changes (Unix only)
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, unix.SIGWINCH)
@@ -272,11 +271,16 @@ func attachLoop(in *os.File, out *os.File, errOut *os.File, sess *session.Sessio
 		case <-hupChan:
 			// SIGHUP received - autodetach (terminal disconnected)
 			// Session state is saved automatically on changes
+			debugAttach("attach: hup detach session=%q", sess.ID)
+			if config.OnDetach != nil {
+				config.OnDetach(sess)
+			}
 			return ErrDetach
 
 		case sig := <-termChan:
 			// SIGTERM or SIGINT received - cleanup and exit
 			// Forward signal to child processes
+			debugAttach("attach: term signal=%v session=%q", sig, sess.ID)
 			if win := sess.GetCurrentWindow(); win != nil {
 				if ptyProc := win.GetPTYProcess(); ptyProc != nil && ptyProc.Cmd != nil && ptyProc.Cmd.Process != nil {
 					if err := ptyProc.Cmd.Process.Signal(sig); err != nil {
@@ -299,7 +303,11 @@ func attachLoop(in *os.File, out *os.File, errOut *os.File, sess *session.Sessio
 		case err := <-inputDone:
 			if err == ErrDetach {
 				// User detached, this is normal
-				return nil
+				debugAttach("attach: input detach session=%q", sess.ID)
+				if config.OnDetach != nil {
+					config.OnDetach(sess)
+				}
+				return ErrDetach
 			}
 
 			// Check if it's a window command
@@ -326,24 +334,29 @@ func attachLoop(in *os.File, out *os.File, errOut *os.File, sess *session.Sessio
 				if win := sess.GetCurrentWindow(); win != nil {
 					if ptyProc := win.GetPTYProcess(); ptyProc != nil {
 						if !ptyProc.IsAlive() {
+							debugAttach("attach: input error, pty dead session=%q err=%v", sess.ID, err)
 							// PTY process died, try to continue with next window
 							if len(sess.Windows) > 1 {
 								sess.NextWindow()
 								continue
 							}
-							// Last window, exit gracefully
-							return fmt.Errorf("PTY process terminated: %w", err)
+							// Last window ended while attached; mirror screen behavior by
+							// treating this as a normal session end rather than hard error.
+							return nil
 						}
 					}
 				}
+				debugAttach("attach: input error session=%q err=%v", sess.ID, err)
 				return fmt.Errorf("input error: %w", wrapIOError(err))
 			}
+			debugAttach("attach: input done session=%q", sess.ID)
 			return err
 
 		case err := <-outputDone:
 			// Output finished (EOF or error)
 			if err == io.EOF {
 				// PTY closed, try to continue with next window or exit
+				debugAttach("attach: output EOF session=%q", sess.ID)
 				if len(sess.Windows) > 1 {
 					// Try next window
 					sess.NextWindow()
@@ -357,20 +370,30 @@ func attachLoop(in *os.File, out *os.File, errOut *os.File, sess *session.Sessio
 				if win := sess.GetCurrentWindow(); win != nil {
 					if ptyProc := win.GetPTYProcess(); ptyProc != nil {
 						if !ptyProc.IsAlive() {
+							debugAttach("attach: output error, pty dead session=%q err=%v", sess.ID, err)
 							// PTY process died
 							if len(sess.Windows) > 1 {
 								sess.NextWindow()
 								continue
 							}
-							return fmt.Errorf("PTY process terminated: %w", err)
+							return nil
 						}
 					}
 				}
+				debugAttach("attach: output error session=%q err=%v", sess.ID, err)
 				return fmt.Errorf("output error: %w", wrapIOError(err))
 			}
+			debugAttach("attach: output done session=%q", sess.ID)
 			return err
 		}
 	}
+}
+
+func debugAttach(format string, args ...any) {
+	if os.Getenv("SGREEN_ATTACH_DEBUG") == "" {
+		return
+	}
+	_, _ = fmt.Fprintf(os.Stderr, format+"\n", args...)
 }
 
 // setWindowSizeForWindow sets the PTY window size for a specific window
@@ -698,17 +721,6 @@ func enableAltScreen(out io.Writer) {
 // disableAltScreen switches back to the normal screen buffer.
 func disableAltScreen(out io.Writer) {
 	_, _ = fmt.Fprint(out, "\x1b[?1049l")
-}
-
-// enableMouseTracking enables basic mouse reporting.
-func enableMouseTracking(out io.Writer) {
-	// Enable X10 mouse reporting (press only).
-	_, _ = fmt.Fprint(out, "\x1b[?1000h")
-}
-
-// disableMouseTracking disables mouse reporting.
-func disableMouseTracking(out io.Writer) {
-	_, _ = fmt.Fprint(out, "\x1b[?1000l")
 }
 
 // FlowControlConfig holds flow control configuration

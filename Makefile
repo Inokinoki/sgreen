@@ -38,9 +38,13 @@ clean:
 run:
 	@go run ./cmd/sgreen
 
-# Test
+# Test (unit + behavior)
 test:
 	@go test -v ./...
+
+# Behavior tests only (CLI exit codes and output). Faster with: make build && SGREEN_BINARY=./build/sgreen make test-behavior
+test-behavior:
+	@go test -v ./test/behavior/...
 
 # Format code
 fmt:

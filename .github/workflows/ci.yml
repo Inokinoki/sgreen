@@ -8,8 +8,11 @@ on:
 
 jobs:
   test:
-    name: Test
-    runs-on: ubuntu-latest
+    name: Go Test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -24,7 +27,7 @@ jobs:
         run: go mod download
 
       - name: Run tests
-        run: make test
+        run: go test ./...
 
   fmt:
     name: Format Check
@@ -125,4 +128,58 @@ jobs:
         with:
           name: ${{ matrix.binary }}
           path: build/${{ matrix.binary }}
+          retention-days: 7
+
+  gnu-screen-parity:
+    name: GNU Screen Parity
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: "go.mod"
+          cache-dependency-path: go.sum
+
+      - name: Build sgreen binary
+        run: |
+          mkdir -p build
+          go build -o build/sgreen ./cmd/sgreen
+
+      - name: Run GNU comparison (if screen exists)
+        shell: bash
+        run: |
+          if ! command -v screen >/dev/null 2>&1; then
+            echo "screen not found on this runner; skipping GNU parity comparison."
+            exit 0
+          fi
+          chmod +x test/behavior/compare_with_gnu_screen.sh
+          SGREEN_BIN="$PWD/build/sgreen" SCREEN_BIN="$(command -v screen)" test/behavior/compare_with_gnu_screen.sh
+
+      - name: Assert no behavior diffs
+        shell: bash
+        run: |
+          report="test/behavior/gnu_screen_comparison_results.md"
+          if [ ! -f "$report" ]; then
+            echo "No parity report found (comparison likely skipped)."
+            exit 0
+          fi
+          if grep -q "different /" "$report"; then
+            echo "GNU parity comparison found differences:"
+            grep "different /" "$report"
+            exit 1
+          fi
+
+      - name: Upload parity report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gnu-screen-parity-${{ matrix.os }}
+          path: test/behavior/gnu_screen_comparison_results.md
+          if-no-files-found: ignore
           retention-days: 7

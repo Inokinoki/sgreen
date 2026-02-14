@@ -86,7 +86,7 @@ func NewWithConfig(id, cmdPath string, args []string, config *Config) (*Session,
 	}
 	for _, r := range id {
 		if !isValidSessionChar(r) {
-			return nil, fmt.Errorf("invalid session name: only alphanumeric characters, dash, and underscore allowed")
+			return nil, fmt.Errorf("invalid session name: only alphanumeric characters, dot, dash, and underscore allowed")
 		}
 	}
 
@@ -213,7 +213,6 @@ func Load(id string) (*Session, error) {
 		if sess.PTYProcess != nil && !sess.PTYProcess.IsAlive() {
 			// Process died, try to reconnect if we have a pts path
 			if sess.PtsPath != "" {
-				sessionsMu.RUnlock()
 				sessionsMu.Lock()
 				if err := sess.ReconnectPTY(); err == nil {
 					sessionsMu.Unlock()
@@ -222,7 +221,6 @@ func Load(id string) (*Session, error) {
 				sessionsMu.Unlock()
 			}
 		}
-		sessionsMu.RUnlock()
 		return sess, nil
 	}
 	sessionsMu.RUnlock()
@@ -381,30 +379,8 @@ func List() []*Session {
 		}
 	}
 
-	// Clean up dead sessions from result
-	cleanedResult := make([]*Session, 0, len(result))
-	for _, sess := range result {
-		hasAliveWindow := false
-		if len(sess.Windows) > 0 {
-			for _, win := range sess.Windows {
-				if win.GetPTYProcess() != nil && win.GetPTYProcess().IsAlive() {
-					hasAliveWindow = true
-					break
-				}
-			}
-		} else {
-			// Fallback check
-			if sess.GetPTYProcess() != nil && sess.GetPTYProcess().IsAlive() {
-				hasAliveWindow = true
-			}
-		}
-		if hasAliveWindow || len(sess.Windows) == 0 {
-			// Keep session if it has alive windows or is a legacy session
-			cleanedResult = append(cleanedResult, sess)
-		}
-	}
-
-	return cleanedResult
+	// Keep dead sessions in the list; -wipe removes them explicitly.
+	return result
 }
 
 // loadAllFromDisk loads all session files from disk
@@ -848,17 +824,17 @@ func (s *Session) Rename(newID string) error {
 	// Validate session name (alphanumeric, dash, underscore)
 	for _, r := range newID {
 		if !isValidSessionChar(r) {
-			return fmt.Errorf("invalid session name: only alphanumeric characters, dash, and underscore allowed")
+			return fmt.Errorf("invalid session name: only alphanumeric characters, dot, dash, and underscore allowed")
 		}
 	}
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	// Check if new name already exists
 	sessionsMu.RLock()
 	if _, exists := sessions[newID]; exists {
 		sessionsMu.RUnlock()
+		s.mu.Unlock()
 		return fmt.Errorf("session %s already exists", newID)
 	}
 	sessionsMu.RUnlock()
@@ -873,15 +849,18 @@ func (s *Session) Rename(newID string) error {
 	s.ID = newID
 	sessions[newID] = s
 	sessionsMu.Unlock()
+	s.mu.Unlock()
 
 	// Rename file on disk
 	if err := os.Rename(oldPath, newPath); err != nil {
 		// Rollback in-memory change
+		s.mu.Lock()
 		sessionsMu.Lock()
 		delete(sessions, newID)
 		s.ID = oldID
 		sessions[oldID] = s
 		sessionsMu.Unlock()
+		s.mu.Unlock()
 		return fmt.Errorf("failed to rename session file: %w", err)
 	}
 
@@ -1037,5 +1016,5 @@ func isValidSessionChar(r rune) bool {
 	return (r >= 'a' && r <= 'z') ||
 		(r >= 'A' && r <= 'Z') ||
 		(r >= '0' && r <= '9') ||
-		r == '-' || r == '_'
+		r == '-' || r == '_' || r == '.'
 }
