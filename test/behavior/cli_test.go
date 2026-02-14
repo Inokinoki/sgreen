@@ -246,6 +246,13 @@ func TestReattachNoSessions(t *testing.T) {
 	}
 }
 
+func TestQuietReattachNoSessionsPTY(t *testing.T) {
+	out, code := runSgreenWithPTY(t, []string{"-q", "-r"}, nil)
+	if code != 10 {
+		t.Fatalf("sgreen -q -r (PTY): exit code %d, want 10 (GNU screen quiet no-resumable-session)\n%s", code, out)
+	}
+}
+
 func TestReattachMissingName(t *testing.T) {
 	out, code := runSgreen(t, []string{"-r", "nosuchsession123"}, nil)
 	if code == 0 {
@@ -258,6 +265,16 @@ func TestReattachMissingName(t *testing.T) {
 	}
 }
 
+func TestOwnerSessionReattachRequiresSuidRoot(t *testing.T) {
+	out, code := runSgreen(t, []string{"-r", "otheruser/tty.host"}, nil)
+	if code == 0 {
+		t.Fatalf("sgreen -r otheruser/tty.host: exit code 0, want non-zero\n%s", out)
+	}
+	if !strings.Contains(out, "Must run suid root for multiuser support.") {
+		t.Fatalf("sgreen -r otheruser/tty.host: expected suid-root requirement message\n%s", out)
+	}
+}
+
 func TestWipeNoSessions(t *testing.T) {
 	out, code := runSgreen(t, []string{"-wipe"}, nil)
 	if code != 1 {
@@ -265,6 +282,16 @@ func TestWipeNoSessions(t *testing.T) {
 	}
 	if !strings.Contains(out, "No Sockets") {
 		t.Fatalf("sgreen -wipe with no sessions: expected no-sockets message\n%s", out)
+	}
+}
+
+func TestQuietWipeNoSessions(t *testing.T) {
+	out, code := runSgreen(t, []string{"-q", "-wipe"}, nil)
+	if code != 8 {
+		t.Fatalf("sgreen -q -wipe: exit code %d, want 8 (GNU screen quiet no-sessions)\n%s", code, out)
+	}
+	if strings.TrimSpace(out) != "" {
+		t.Fatalf("sgreen -q -wipe: expected no output, got %q", out)
 	}
 }
 
@@ -302,6 +329,27 @@ func TestPowerDetachNamedSessionNoSessions(t *testing.T) {
 	if !strings.Contains(out, "There is no screen to be detached matching nosuch.") &&
 		!strings.Contains(out, "There is no screen to be detached") {
 		t.Fatalf("sgreen -D nosuch: expected GNU-style no-detachable-session message\n%s", out)
+	}
+}
+
+func TestPowerDetachNamedSessionWithCommandNoSessions(t *testing.T) {
+	out, code := runSgreen(t, []string{"-D", "nosuch", "/bin/sh", "-c", "echo hi"}, nil)
+	if code == 0 {
+		t.Fatalf("sgreen -D nosuch /bin/sh -c 'echo hi': exit code 0, want non-zero when no sessions\n%s", out)
+	}
+	if strings.Contains(out, "Error attaching to session") || strings.Contains(out, "failed to start PTY") {
+		t.Fatalf("sgreen -D nosuch <cmd> should not create/attach a session\n%s", out)
+	}
+	if !strings.Contains(out, "There is no screen to be detached.") &&
+		!strings.Contains(out, "There is no screen to be detached") {
+		t.Fatalf("sgreen -D nosuch <cmd>: expected GNU-style generic no-detachable-session message\n%s", out)
+	}
+}
+
+func TestPowerDetachNoForkDetachedStart(t *testing.T) {
+	out, code := runSgreen(t, []string{"-D", "-m", "-S", "dmcase", "/bin/sh", "-c", "exit 0"}, nil)
+	if code != 0 {
+		t.Fatalf("sgreen -D -m -S dmcase /bin/sh -c 'exit 0': exit code %d, want 0\n%s", code, out)
 	}
 }
 
@@ -441,6 +489,32 @@ func TestConfigNonexistent(t *testing.T) {
 	// May contain "No " (no sessions) or a config warning; either is acceptable.
 }
 
+func TestTitleFlagWithList(t *testing.T) {
+	out, code := runSgreen(t, []string{"-t", "mytitle", "-ls"}, nil)
+	if code != 1 {
+		t.Fatalf("sgreen -t mytitle -ls: exit code %d, want 1\n%s", code, out)
+	}
+	if !strings.Contains(out, "No Sockets") {
+		t.Fatalf("sgreen -t mytitle -ls: expected list/no-sockets output\n%s", out)
+	}
+}
+
+func TestLoginFlagsWithList(t *testing.T) {
+	tests := [][]string{
+		{"-l", "-ls"},
+		{"-ln", "-ls"},
+	}
+	for _, args := range tests {
+		out, code := runSgreen(t, args, nil)
+		if code != 1 {
+			t.Fatalf("sgreen %v: exit code %d, want 1\n%s", args, code, out)
+		}
+		if !strings.Contains(out, "No Sockets") {
+			t.Fatalf("sgreen %v: expected list/no-sockets output\n%s", args, out)
+		}
+	}
+}
+
 func TestWipeExactMessage(t *testing.T) {
 	out, code := runSgreen(t, []string{"-wipe"}, nil)
 	if code != 1 {
@@ -477,6 +551,16 @@ func TestMultiuserNoSessions(t *testing.T) {
 	}
 }
 
+func TestOwnerSessionMultiuserRequiresSuidRoot(t *testing.T) {
+	out, code := runSgreen(t, []string{"-x", "otheruser/tty.host"}, nil)
+	if code == 0 {
+		t.Fatalf("sgreen -x otheruser/tty.host: exit code 0, want non-zero\n%s", out)
+	}
+	if !strings.Contains(out, "Must run suid root for multiuser support.") {
+		t.Fatalf("sgreen -x otheruser/tty.host: expected suid-root requirement message\n%s", out)
+	}
+}
+
 func TestSendCommandNoSessionWithName(t *testing.T) {
 	out, code := runSgreen(t, []string{"-X", "stuff", "x", "-S", "foo"}, nil)
 	if code == 0 {
@@ -486,6 +570,16 @@ func TestSendCommandNoSessionWithName(t *testing.T) {
 		t.Fatalf("sgreen -X -S foo: stderr should mention no session found\n%s", out)
 	}
 	// Session name "foo" may appear in error when implementation includes it.
+}
+
+func TestSendCommandNoSessionWithNameUsesGenericMessage(t *testing.T) {
+	out, code := runSgreen(t, []string{"-X", "quit", "-S", "nosuch"}, nil)
+	if code == 0 {
+		t.Fatalf("sgreen -X quit -S nosuch: exit code 0, want non-zero\n%s", out)
+	}
+	if !strings.Contains(out, "No screen session found.") {
+		t.Fatalf("sgreen -X quit -S nosuch: expected generic no-session message\n%s", out)
+	}
 }
 
 func TestListExactMessage(t *testing.T) {
