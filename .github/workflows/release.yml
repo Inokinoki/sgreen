@@ -64,7 +64,8 @@ jobs:
           GOARM: ${{ matrix.goarm }}
         run: |
           mkdir -p dist
-          go build -ldflags="-w -s" -o dist/${{ matrix.binary }} ./cmd/sgreen
+          VERSION="${GITHUB_REF_NAME#v}"
+          go build -ldflags="-w -s -X main.version=${VERSION}" -o dist/${{ matrix.binary }} ./cmd/sgreen
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

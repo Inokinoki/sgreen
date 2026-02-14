@@ -18,7 +18,7 @@ A simplified screen-like terminal multiplexer written in pure Go, compatible wit
 
 ## Requirements
 
-- Go 1.21 or later
+- Go 1.24 or later
 - Make (optional, for using Makefile)
 
 ## Building
@@ -128,6 +128,14 @@ make test
 make clean
 ```
 
+## Versioning and Releases
+
+- Versioning follows SemVer (`vMAJOR.MINOR.PATCH` tags).
+- PR titles are validated with Conventional Commit prefixes (`feat:`, `fix:`, etc.).
+- `Release Please` runs on `main` and opens/updates a release PR with the next semantic version and changelog updates.
+- When a version tag like `v1.2.3` is pushed, the release workflow builds all platform binaries and publishes them as GitHub Release assets.
+- Binary version output (`sgreen -v`) is injected at build time from the tag via linker flags.
+
 ## Notes
 
 - All builds use `CGO_ENABLED=0` to ensure no C dependencies and static linking
@@ -140,5 +148,4 @@ make clean
 ## License
 
 MIT License - see LICENSE file for details.
-
 

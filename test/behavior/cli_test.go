@@ -364,8 +364,8 @@ func TestVersionContainsVersionNumber(t *testing.T) {
 	if code != 1 {
 		t.Fatalf("sgreen -v: exit code %d, want 1\n%s", code, out)
 	}
-	if !strings.Contains(out, "0.1.0") {
-		t.Fatalf("sgreen -v: output should contain version 0.1.0\n%s", out)
+	if !strings.Contains(out, "Screen version ") || !strings.Contains(out, " (sgreen)") {
+		t.Fatalf("sgreen -v: output should contain screen-style version token\n%s", out)
 	}
 }
 
