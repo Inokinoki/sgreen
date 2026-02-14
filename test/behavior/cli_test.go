@@ -119,8 +119,15 @@ func runSgreenWithPTY(tb testing.TB, args []string, extraEnv map[string]string) 
 		env = setEnv(env, k, v)
 	}
 
-	cmdline := strings.Join(append([]string{baseCmd.Path}, args...), " ")
-	cmd := exec.Command("script", "-q", "/dev/null", cmdline)
+	cmdline := shellCommandLine(baseCmd.Path, args)
+	var cmd *exec.Cmd
+	if runtime.GOOS == "linux" {
+		// util-linux script expects command via -c.
+		cmd = exec.Command("script", "-q", "-e", "-c", cmdline, "/dev/null")
+	} else {
+		// BSD/macOS script accepts command and args positionally.
+		cmd = exec.Command("script", "-q", "/dev/null", "/bin/sh", "-lc", cmdline)
+	}
 	cmd.Dir = baseCmd.Dir
 	cmd.Env = env
 	out, err := cmd.CombinedOutput()
@@ -133,6 +140,22 @@ func runSgreenWithPTY(tb testing.TB, args []string, extraEnv map[string]string) 
 		}
 	}
 	return output, exitCode
+}
+
+func shellCommandLine(path string, args []string) string {
+	parts := make([]string, 0, len(args)+1)
+	parts = append(parts, shellQuote(path))
+	for _, arg := range args {
+		parts = append(parts, shellQuote(arg))
+	}
+	return strings.Join(parts, " ")
+}
+
+func shellQuote(s string) string {
+	if s == "" {
+		return "''"
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'"'"'`) + "'"
 }
 
 func setEnv(env []string, key, value string) []string {
