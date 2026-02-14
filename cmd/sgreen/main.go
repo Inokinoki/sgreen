@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/inoki/sgreen/internal/session"
 	"github.com/inoki/sgreen/internal/ui"
+	xterm "golang.org/x/term"
 )
 
 // Config holds configuration options from command-line flags
@@ -57,7 +59,7 @@ func main() {
 	}
 
 	flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ContinueOnError)
-	flag.CommandLine.SetOutput(os.Stderr)
+	flag.CommandLine.SetOutput(io.Discard)
 
 	// Parse flags
 	var (
@@ -103,6 +105,7 @@ func main() {
 
 	flag.Usage = printUsage
 	if err := flag.CommandLine.Parse(normalizeArgs(os.Args[1:])); err != nil {
+		printUsage()
 		os.Exit(1)
 	}
 
@@ -180,6 +183,13 @@ func main() {
 		os.Exit(handleList(config.Quiet))
 	}
 
+	// GNU screen requires a controlling terminal for reattach-style operations.
+	if requiresTerminalForOperation(*reattach, *reattachOrCreate, *reattachOrCreateRR, *multiuser, *detach) &&
+		!xterm.IsTerminal(int(os.Stdin.Fd())) {
+		_, _ = fmt.Fprintln(os.Stderr, "Must be connected to a terminal.")
+		os.Exit(1)
+	}
+
 	// Screen-compatible detached creation mode: -d -m (including -dmS form).
 	detachedCreate := *detach && *ignoreSTY && !*reattach && !*reattachOrCreate && !*reattachOrCreateRR && !*powerDetach
 	if detachedCreate {
@@ -189,7 +199,8 @@ func main() {
 
 	// Handle power detach (-D)
 	if *powerDetach {
-		handlePowerDetach(*sessionName, flag.Args(), config)
+		targetSession, cmdArgs := resolveSessionAndCommandArgs(*sessionName, flag.Args())
+		handlePowerDetach(targetSession, cmdArgs, config)
 		return
 	}
 
@@ -201,13 +212,15 @@ func main() {
 
 	// Handle reattach or create with RR (-RR)
 	if *reattachOrCreateRR {
-		handleReattachOrCreateRR(*sessionName, flag.Args(), config)
+		targetSession, cmdArgs := resolveSessionAndCommandArgs(*sessionName, flag.Args())
+		handleReattachOrCreateRR(targetSession, cmdArgs, config)
 		return
 	}
 
 	// Handle reattach or create (-R)
 	if *reattachOrCreate {
-		handleReattachOrCreate(*sessionName, flag.Args(), config)
+		targetSession, cmdArgs := resolveSessionAndCommandArgs(*sessionName, flag.Args())
+		handleReattachOrCreate(targetSession, cmdArgs, config)
 		return
 	}
 
@@ -236,9 +249,7 @@ func main() {
 
 // printVersion prints version information
 func printVersion() {
-	fmt.Println("sgreen version 0.1.0")
-	fmt.Println("A simplified screen-like terminal multiplexer")
-	fmt.Println("Compatible with GNU screen command-line interface")
+	fmt.Println("Screen version 0.1.0 (sgreen)")
 }
 
 // handleWipe removes dead sessions from the list.
@@ -599,16 +610,19 @@ func selectReattachSession(
 	isAttached func(*session.Session) bool,
 ) (*session.Session, string, bool) {
 	if len(sessions) == 0 {
-		if sessionName != "" {
-			return nil, fmt.Sprintf("No screen session found: %s", sessionName), false
+		if multiuser {
+			return nil, noAttachableScreenMessage(sessionName), false
 		}
-		return nil, "No screen session found.", false
+		return nil, noResumableScreenMessage(sessionName), false
 	}
 
 	if sessionName != "" {
 		sess, err := loadByName(sessionName)
 		if err != nil {
-			return nil, fmt.Sprintf("No screen session found: %s", sessionName), false
+			if multiuser {
+				return nil, noAttachableScreenMessage(sessionName), false
+			}
+			return nil, noResumableScreenMessage(sessionName), false
 		}
 		if !multiuser && isAttached(sess) {
 			return nil, fmt.Sprintf("Session %s is attached; use -d -r or -x.", sessionName), false
@@ -636,9 +650,9 @@ func selectReattachSession(
 		return nil, "There are several detached sessions:", true
 	}
 	if len(sessions) == 1 && isAttached(sessions[0]) {
-		return nil, "There is no screen to be resumed (the only session is attached).", false
+		return nil, noResumableScreenMessage(""), false
 	}
-	return nil, "No detached screen session found.", false
+	return nil, noResumableScreenMessage(""), false
 }
 
 // handleReattachOrCreate implements -R flag: reattach or create if none exists
@@ -727,7 +741,7 @@ func handlePowerDetach(sessionName string, cmdArgs []string, config *Config) {
 		if len(cmdArgs) > 0 {
 			handleNew(sessionName, cmdArgs, config)
 		} else {
-			_, _ = fmt.Fprintf(os.Stderr, "No screen session found.\n")
+			_, _ = fmt.Fprintln(os.Stderr, noDetachableScreenMessage(sessionName))
 			os.Exit(1)
 		}
 		return
@@ -743,7 +757,7 @@ func handlePowerDetach(sessionName string, cmdArgs []string, config *Config) {
 			if len(cmdArgs) > 0 {
 				handleNew(sessionName, cmdArgs, config)
 			} else {
-				_, _ = fmt.Fprintf(os.Stderr, "No screen session found: %s\n", sessionName)
+				_, _ = fmt.Fprintln(os.Stderr, noDetachableScreenMessage(sessionName))
 				os.Exit(1)
 			}
 			return
@@ -772,7 +786,7 @@ func handleDetach(reattach bool, sessionName string) {
 	sessions := session.List()
 
 	if len(sessions) == 0 {
-		_, _ = fmt.Fprintf(os.Stderr, "No screen session found.\n")
+		_, _ = fmt.Fprintln(os.Stderr, noDetachableScreenMessage(sessionName))
 		os.Exit(1)
 	}
 
@@ -782,14 +796,14 @@ func handleDetach(reattach bool, sessionName string) {
 	if sessionName != "" {
 		sess, err = session.Load(sessionName)
 		if err != nil {
-			_, _ = fmt.Fprintf(os.Stderr, "No screen session found: %s\n", sessionName)
+			_, _ = fmt.Fprintln(os.Stderr, noDetachableScreenMessage(sessionName))
 			os.Exit(1)
 		}
 	} else {
 		// Find first attached session
 		attached := findAttachedSessions(sessions)
 		if len(attached) == 0 {
-			_, _ = fmt.Fprintf(os.Stderr, "No attached screen session found.\n")
+			_, _ = fmt.Fprintln(os.Stderr, noDetachableScreenMessage(""))
 			os.Exit(1)
 		}
 		sess = attached[0]
@@ -1092,13 +1106,21 @@ func handleList(quiet bool) int {
 		return 0
 	}
 
-	if len(sessions) == 1 {
+	entries := sessionListEntries(sessions)
+	if len(entries) == 0 {
+		fmt.Printf("No Sockets found in %s.\n", screenSocketDirForDisplay())
+		return 1
+	}
+
+	if len(entries) == 1 {
 		fmt.Println("There is a screen on:")
 	} else {
 		fmt.Println("There are screens on:")
 	}
-	printSessionList(sessions)
-	fmt.Printf("%d %s in %s.\n", len(sessions), socketWord(len(sessions)), screenSocketDirForDisplay())
+	for _, entry := range entries {
+		fmt.Println(entry)
+	}
+	fmt.Printf("%d %s in %s.\n", len(entries), socketWord(len(entries)), screenSocketDirForDisplay())
 	return 0
 }
 
@@ -1117,11 +1139,19 @@ func listableSessions(sessions []*session.Session) []*session.Session {
 
 // printSessionList prints sessions in screen-compatible format
 func printSessionList(sessions []*session.Session) {
+	for _, entry := range sessionListEntries(sessions) {
+		fmt.Println(entry)
+	}
+}
+
+func sessionListEntries(sessions []*session.Session) []string {
 	// Screen format: "PID.TTY.HOST (Attached|Detached) DATE TIME (SESSIONNAME)"
 	nameCounts := make(map[string]int, len(sessions))
 	for _, sess := range sessions {
 		nameCounts[sess.ID]++
 	}
+
+	entries := make([]string, 0, len(sessions))
 	for _, sess := range sessions {
 		status := "Detached"
 		ptyProc := sess.GetPTYProcess()
@@ -1161,12 +1191,16 @@ func printSessionList(sessions []*session.Session) {
 			displayName = fmt.Sprintf("%d.%s", sess.Pid, baseName)
 		}
 
-		fmt.Printf("\t%d.%s.%s\t(%s)\t%s %s\t(%s)\n",
-			sess.Pid, tty, hostname, status, dateStr, timeStr, displayName)
+		entries = append(entries, fmt.Sprintf("\t%d.%s.%s\t(%s)\t%s %s\t(%s)",
+			sess.Pid, tty, hostname, status, dateStr, timeStr, displayName))
 	}
+	return entries
 }
 
 func screenSocketDirForDisplay() string {
+	if screenDir := os.Getenv("SCREENDIR"); screenDir != "" {
+		return screenDir
+	}
 	user := session.CurrentUser()
 	if user == "" {
 		user = "unknown"
@@ -1191,6 +1225,16 @@ func resolveSessionName(flagValue string, args []string) string {
 	return args[0]
 }
 
+func resolveSessionAndCommandArgs(flagValue string, args []string) (string, []string) {
+	if flagValue != "" {
+		return flagValue, args
+	}
+	if len(args) == 0 {
+		return "", nil
+	}
+	return args[0], args[1:]
+}
+
 func normalizeArgs(args []string) []string {
 	normalized := make([]string, 0, len(args))
 	for _, arg := range args {
@@ -1206,6 +1250,31 @@ func normalizeArgs(args []string) []string {
 		}
 	}
 	return normalized
+}
+
+func requiresTerminalForOperation(reattach bool, reattachOrCreate bool, reattachOrCreateRR bool, multiuser bool, detach bool) bool {
+	return reattach || reattachOrCreate || reattachOrCreateRR || multiuser || (detach && reattach)
+}
+
+func noResumableScreenMessage(name string) string {
+	if name != "" {
+		return fmt.Sprintf("There is no screen to be resumed matching %s.", name)
+	}
+	return "There is no screen to be resumed."
+}
+
+func noAttachableScreenMessage(name string) string {
+	if name != "" {
+		return fmt.Sprintf("There is no screen to be attached matching %s.", name)
+	}
+	return "There is no screen to be attached."
+}
+
+func noDetachableScreenMessage(name string) string {
+	if name != "" {
+		return fmt.Sprintf("There is no screen to be detached matching %s.", name)
+	}
+	return "There is no screen to be detached."
 }
 
 func defaultSessionName() string {
@@ -1560,7 +1629,12 @@ func loadConfigFile(configFile string, config *Config) {
 }
 
 func printUsage() {
-	fmt.Println("sgreen - screen manager with VT100/ANSI terminal emulation")
+	prog := os.Args[0]
+	if prog == "" {
+		prog = "sgreen"
+	}
+	fmt.Printf("Use: %s [-opts] [cmd [args]]\n", prog)
+	fmt.Printf(" or: %s -r [host.tty]\n", prog)
 	fmt.Println()
 	fmt.Println("Usage:")
 	fmt.Println("  sgreen [options] [cmd [args]]")

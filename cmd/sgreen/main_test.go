@@ -12,7 +12,7 @@ import (
 
 func TestSelectReattachSession_NoSessionsWithName(t *testing.T) {
 	_, errMsg, printList := selectReattachSession(nil, "demo", false, nil, nil)
-	if errMsg != "No screen session found: demo" {
+	if errMsg != "There is no screen to be resumed matching demo." {
 		t.Fatalf("unexpected error message: %q", errMsg)
 	}
 	if printList {
@@ -63,7 +63,7 @@ func TestSelectReattachSession_UnnamedAttachedOnly(t *testing.T) {
 	if selected != nil {
 		t.Fatalf("expected no selected session")
 	}
-	if errMsg != "There is no screen to be resumed (the only session is attached)." {
+	if errMsg != "There is no screen to be resumed." {
 		t.Fatalf("unexpected error message: %q", errMsg)
 	}
 	if printList {
@@ -146,5 +146,45 @@ func TestDefaultSessionNameUsesValidCharacters(t *testing.T) {
 	host := parts[len(parts)-1]
 	if host == "" {
 		t.Fatalf("defaultSessionName() missing host component: %q", name)
+	}
+}
+
+func TestResolveSessionAndCommandArgs(t *testing.T) {
+	tests := []struct {
+		name        string
+		flagValue   string
+		args        []string
+		wantSession string
+		wantArgs    []string
+	}{
+		{
+			name:        "flag session keeps full args as command",
+			flagValue:   "named",
+			args:        []string{"/bin/sh", "-c", "echo ok"},
+			wantSession: "named",
+			wantArgs:    []string{"/bin/sh", "-c", "echo ok"},
+		},
+		{
+			name:        "positional first arg is session",
+			args:        []string{"target", "/bin/echo", "hello"},
+			wantSession: "target",
+			wantArgs:    []string{"/bin/echo", "hello"},
+		},
+		{
+			name:        "no args returns empty session",
+			args:        nil,
+			wantSession: "",
+			wantArgs:    nil,
+		},
+	}
+
+	for _, tt := range tests {
+		gotSession, gotArgs := resolveSessionAndCommandArgs(tt.flagValue, tt.args)
+		if gotSession != tt.wantSession {
+			t.Fatalf("%s: session=%q, want %q", tt.name, gotSession, tt.wantSession)
+		}
+		if strings.Join(gotArgs, "\x00") != strings.Join(tt.wantArgs, "\x00") {
+			t.Fatalf("%s: args=%q, want %q", tt.name, gotArgs, tt.wantArgs)
+		}
 	}
 }

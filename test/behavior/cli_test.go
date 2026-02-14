@@ -66,6 +66,32 @@ func runSgreen(tb testing.TB, args []string, extraEnv map[string]string) (output
 	return output, exitCode
 }
 
+func runSgreenWithPTY(tb testing.TB, args []string, extraEnv map[string]string) (output string, exitCode int) {
+	tb.Helper()
+	baseCmd := sgreenCmd(tb, args)
+	homeDir := tb.TempDir()
+	env := os.Environ()
+	env = setEnv(env, "HOME", homeDir)
+	for k, v := range extraEnv {
+		env = setEnv(env, k, v)
+	}
+
+	cmdline := strings.Join(append([]string{baseCmd.Path}, args...), " ")
+	cmd := exec.Command("script", "-q", "/dev/null", cmdline)
+	cmd.Dir = baseCmd.Dir
+	cmd.Env = env
+	out, err := cmd.CombinedOutput()
+	output = string(out)
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			exitCode = exitErr.ExitCode()
+		} else {
+			exitCode = -1
+		}
+	}
+	return output, exitCode
+}
+
 func setEnv(env []string, key, value string) []string {
 	prefix := key + "="
 	for i, e := range env {
@@ -147,8 +173,10 @@ func TestReattachNoSessions(t *testing.T) {
 	if code == 0 {
 		t.Fatalf("sgreen -r: exit code 0, want non-zero when no sessions\n%s", out)
 	}
-	if !strings.Contains(out, "No screen session found") && !strings.Contains(out, "No screen session") {
-		t.Fatalf("sgreen -r: stderr should mention no session found\n%s", out)
+	if !strings.Contains(out, "No screen session found") &&
+		!strings.Contains(out, "No screen session") &&
+		!strings.Contains(out, "Must be connected to a terminal") {
+		t.Fatalf("sgreen -r: stderr should mention no session or terminal requirement\n%s", out)
 	}
 }
 
@@ -157,8 +185,10 @@ func TestReattachMissingName(t *testing.T) {
 	if code == 0 {
 		t.Fatalf("sgreen -r nosuchsession123: exit code 0, want non-zero\n%s", out)
 	}
-	if !strings.Contains(out, "No screen session found") && !strings.Contains(out, "nosuchsession123") {
-		t.Fatalf("sgreen -r nosuchsession123: stderr should mention no session or name\n%s", out)
+	if !strings.Contains(out, "No screen session found") &&
+		!strings.Contains(out, "nosuchsession123") &&
+		!strings.Contains(out, "Must be connected to a terminal") {
+		t.Fatalf("sgreen -r nosuchsession123: stderr should mention no session/name or terminal requirement\n%s", out)
 	}
 }
 
@@ -177,8 +207,10 @@ func TestDetachNoSessions(t *testing.T) {
 	if code == 0 {
 		t.Fatalf("sgreen -d: exit code 0, want non-zero when no sessions\n%s", out)
 	}
-	if !strings.Contains(out, "No screen session found") && !strings.Contains(out, "No attached") {
-		t.Fatalf("sgreen -d: stderr should mention no session\n%s", out)
+	if !strings.Contains(out, "There is no screen to be detached") &&
+		!strings.Contains(out, "No screen session found") &&
+		!strings.Contains(out, "No attached") {
+		t.Fatalf("sgreen -d: stderr should mention no detachable session\n%s", out)
 	}
 }
 
@@ -187,8 +219,23 @@ func TestPowerDetachNoSessions(t *testing.T) {
 	if code == 0 {
 		t.Fatalf("sgreen -D: exit code 0, want non-zero when no sessions\n%s", out)
 	}
-	if !strings.Contains(out, "No screen session found") {
-		t.Fatalf("sgreen -D: stderr should mention no session found\n%s", out)
+	if !strings.Contains(out, "There is no screen to be detached") &&
+		!strings.Contains(out, "No screen session found") {
+		t.Fatalf("sgreen -D: stderr should mention no detachable session\n%s", out)
+	}
+}
+
+func TestPowerDetachNamedSessionNoSessions(t *testing.T) {
+	out, code := runSgreen(t, []string{"-D", "nosuch"}, nil)
+	if code == 0 {
+		t.Fatalf("sgreen -D nosuch: exit code 0, want non-zero when no sessions\n%s", out)
+	}
+	if strings.Contains(out, "failed to start PTY") || strings.Contains(out, "executable file not found") {
+		t.Fatalf("sgreen -D nosuch should treat nosuch as session name, not command\n%s", out)
+	}
+	if !strings.Contains(out, "There is no screen to be detached matching nosuch.") &&
+		!strings.Contains(out, "There is no screen to be detached") {
+		t.Fatalf("sgreen -D nosuch: expected GNU-style no-detachable-session message\n%s", out)
 	}
 }
 
@@ -233,14 +280,14 @@ func TestIgnoreSTY(t *testing.T) {
 	}
 }
 
-func TestVersionThreeLines(t *testing.T) {
+func TestVersionSingleLine(t *testing.T) {
 	out, code := runSgreen(t, []string{"-v"}, nil)
 	if code != 1 {
 		t.Fatalf("sgreen -v: exit code %d, want 1\n%s", code, out)
 	}
 	lines := strings.Split(strings.TrimSpace(out), "\n")
-	if len(lines) < 2 {
-		t.Fatalf("sgreen -v: expected at least 2 lines of version output, got %d\n%s", len(lines), out)
+	if len(lines) != 1 {
+		t.Fatalf("sgreen -v: expected exactly 1 line of version output, got %d\n%s", len(lines), out)
 	}
 }
 
@@ -256,14 +303,13 @@ func TestVersionContainsVersionNumber(t *testing.T) {
 	}
 }
 
-func TestVersionExactlyThreeLines(t *testing.T) {
+func TestVersionFormatScreenStyle(t *testing.T) {
 	out, code := runSgreen(t, []string{"-v"}, nil)
 	if code != 1 {
 		t.Fatalf("sgreen -v: exit code %d, want 1\n%s", code, out)
 	}
-	lines := strings.Split(strings.TrimSpace(out), "\n")
-	if len(lines) != 3 {
-		t.Fatalf("sgreen -v: expected exactly 3 lines, got %d\n%s", len(lines), out)
+	if !strings.Contains(out, "Screen version") {
+		t.Fatalf("sgreen -v: expected screen-style version prefix\n%s", out)
 	}
 }
 
@@ -344,8 +390,9 @@ func TestReattachErrorContainsSessionName(t *testing.T) {
 	if code == 0 {
 		t.Fatalf("sgreen -r wrongname: exit code 0, want non-zero\n%s", out)
 	}
-	if !strings.Contains(out, "No screen session found") {
-		t.Fatalf("sgreen -r wrongname: stderr should contain 'No screen session found'\n%s", out)
+	if !strings.Contains(out, "No screen session found") &&
+		!strings.Contains(out, "Must be connected to a terminal") {
+		t.Fatalf("sgreen -r wrongname: stderr should contain no-session or terminal requirement\n%s", out)
 	}
 	// When there are no sessions, message may be "No screen session found.";
 	// when there are sessions but not this one, message may include "wrongname".
@@ -357,8 +404,10 @@ func TestMultiuserNoSessions(t *testing.T) {
 	if code == 0 {
 		t.Fatalf("sgreen -x: exit code 0, want non-zero when no sessions\n%s", out)
 	}
-	if !strings.Contains(out, "No screen session found") && !strings.Contains(out, "Multiple sessions") {
-		t.Fatalf("sgreen -x: expected 'No screen session found' or 'Multiple sessions'\n%s", out)
+	if !strings.Contains(out, "No screen session found") &&
+		!strings.Contains(out, "Multiple sessions") &&
+		!strings.Contains(out, "Must be connected to a terminal") {
+		t.Fatalf("sgreen -x: expected no-session/multiple or terminal requirement\n%s", out)
 	}
 }
 
@@ -403,8 +452,11 @@ func TestReattachNoSessionExactMessage(t *testing.T) {
 	if code == 0 {
 		t.Fatalf("sgreen -r: exit code 0, want non-zero\n%s", out)
 	}
-	if !strings.Contains(out, "No screen session found.") && !strings.Contains(out, "No screen session found") {
-		t.Fatalf("sgreen -r: stderr should contain 'No screen session found'\n%s", out)
+	if !strings.Contains(out, "No screen session found.") &&
+		!strings.Contains(out, "No screen session found") &&
+		!strings.Contains(out, "Must be connected to a terminal.") &&
+		!strings.Contains(out, "Must be connected to a terminal") {
+		t.Fatalf("sgreen -r: stderr should contain no-session or terminal requirement\n%s", out)
 	}
 }
 
@@ -419,12 +471,12 @@ func TestUnknownFlagProducesOutput(t *testing.T) {
 }
 
 func TestReattachMissingNameAlwaysMentionsRequestedSession(t *testing.T) {
-	out, code := runSgreen(t, []string{"-r", "nosuchsession123"}, nil)
+	out, code := runSgreenWithPTY(t, []string{"-r", "nosuchsession123"}, nil)
 	if code == 0 {
 		t.Fatalf("sgreen -r nosuchsession123: exit code 0, want non-zero\n%s", out)
 	}
 	if !strings.Contains(out, "nosuchsession123") {
-		t.Fatalf("sgreen -r nosuchsession123: output should include requested session name\n%s", out)
+		t.Fatalf("sgreen -r nosuchsession123 (PTY): output should include requested session name\n%s", out)
 	}
 }
 
@@ -462,7 +514,7 @@ func TestShortHRequiresArgument(t *testing.T) {
 	if code == 0 {
 		t.Fatalf("sgreen -h: exit code 0, want non-zero because -h expects scrollback value\n%s", out)
 	}
-	if !strings.Contains(out, "flag needs an argument") {
-		t.Fatalf("sgreen -h: expected missing-argument error\n%s", out)
+	if !strings.Contains(out, "Use:") && !strings.Contains(out, "Usage:") {
+		t.Fatalf("sgreen -h: expected usage output\n%s", out)
 	}
 }
