@@ -1,0 +1,22 @@
+session:
+  name: "test_session"
+  shell: "/bin/bash"
+  log_file: "/tmp/sgreen.log"
+
+windows:
+  - id: 0
+    cmd: "/bin/sh"
+    title: "Shell 1"
+  - id: 1
+    cmd: "/bin/zsh"
+    title: "Shell 2"
+
+logging:
+  enabled: true
+  level: "debug"
+  file: "/var/log/sgreen/debug.log"
+
+ui:
+  status_bar: true
+  scrollback: 1000
+  encoding: "UTF-8"

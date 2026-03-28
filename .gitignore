@@ -4,12 +4,15 @@
 *.dll
 *.so
 *.dylib
+sgreen
 
 # Test binary, built with `go test -c`
 *.test
 
 # Output of the go coverage tool
 *.out
+coverage.out
+coverage.html
 
 # Dependency directories
 vendor/
@@ -17,17 +20,32 @@ vendor/
 # Go workspace file
 go.work
 
-# Build directory
+# Build artifacts
 build/
 dist/
 
-# IDE
-.idea/
+# Cache directories
+.gocache/
+.gomodcache/
+
+# Test artifacts
+*.prof
+*.trace
+race_report.txt
+memory_report.txt
+benchmark.txt
+
+# IDE specific files
 .vscode/
+.idea/
 *.swp
 *.swo
 *~
 
-# OS
+# OS specific files
 .DS_Store
 Thumbs.db
+
+# Session files (test artifacts)
+.sgreen/sessions/
+*.json
