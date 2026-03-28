@@ -17,7 +17,9 @@ func TestSessionCreate(t *testing.T) {
 	if s.ID != "test" {
 		t.Errorf("Expected session ID to be 'test', got '%s'", s.ID)
 	}
-	defer session.Delete(s.ID)
+	if err := session.Delete(s.ID); err != nil {
+		t.Logf("Failed to delete session: %v", err)
+	}
 }
 
 func TestSessionCreateWithEmptyName(t *testing.T) {
@@ -32,7 +34,9 @@ func TestSessionLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create session: %v", err)
 	}
-	defer session.Delete(s.ID)
+	if err := session.Delete(s.ID); err != nil {
+		t.Logf("Failed to delete session: %v", err)
+	}
 
 	if len(s.Windows) == 0 {
 		t.Errorf("Expected at least one window in session")
@@ -44,7 +48,9 @@ func TestWindowManagement(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create session: %v", err)
 	}
-	defer session.Delete(s.ID)
+	if err := session.Delete(s.ID); err != nil {
+		t.Logf("Failed to delete session: %v", err)
+	}
 
 	initialCount := len(s.Windows)
 	if initialCount == 0 {
@@ -69,9 +75,13 @@ func TestWindowSwitching(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create session: %v", err)
 	}
-	defer session.Delete(s.ID)
+	if err := session.Delete(s.ID); err != nil {
+		t.Logf("Failed to delete session: %v", err)
+	}
 
-	s.CreateWindow("/bin/sh", []string{}, nil)
+	if _, err := s.CreateWindow("/bin/sh", []string{}, nil); err != nil {
+		t.Logf("Failed to create window: %v", err)
+	}
 
 	if len(s.Windows) < 2 {
 		t.Fatalf("Expected at least 2 windows for switching test")
@@ -92,7 +102,9 @@ func TestWindowSwitchingInvalidIndex(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create session: %v", err)
 	}
-	defer session.Delete(s.ID)
+	if err := session.Delete(s.ID); err != nil {
+		t.Logf("Failed to delete session: %v", err)
+	}
 
 	err = s.SwitchToWindow("999")
 	if err == nil {
