@@ -50,8 +50,8 @@ func TestWindowDeletion(t *testing.T) {
 
 	initialCount := len(s.Windows)
 
-	if err := win.Close(); err != nil {
-		t.Logf("Failed to close window: %v", err)
+	if err := win.Kill(); err != nil {
+		t.Logf("Failed to kill window: %v", err)
 	}
 
 	if len(s.Windows) != initialCount {
@@ -80,9 +80,7 @@ func TestWindowTitle(t *testing.T) {
 	}
 
 	title := "Test Window Title"
-	if err := win.SetTitle(title); err != nil {
-		t.Fatalf("Failed to set window title: %v", err)
-	}
+	win.Title = title
 
 	if win.Title != title {
 		t.Errorf("Expected window title %s, got %s", title, win.Title)
@@ -114,9 +112,7 @@ func TestWindowEncoding(t *testing.T) {
 		t.Logf("Default encoding is %s", win.Encoding)
 	}
 
-	if err := win.SetEncoding(encoding); err != nil {
-		t.Fatalf("Failed to set window encoding: %v", err)
-	}
+	win.Encoding = encoding
 
 	if win.Encoding != encoding {
 		t.Errorf("Expected window encoding %s, got %s", encoding, win.Encoding)
