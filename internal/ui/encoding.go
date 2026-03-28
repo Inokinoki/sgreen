@@ -7,15 +7,16 @@ import (
 	"golang.org/x/text/encoding/charmap"
 )
 
-// normalizeEncoding normalizes encoding strings for comparison.
-func normalizeEncoding(encoding string) string {
+// NormalizeEncoding normalizes encoding strings for comparison.
+func NormalizeEncoding(encoding string) string {
 	normalized := strings.ToUpper(strings.TrimSpace(encoding))
 	normalized = strings.ReplaceAll(normalized, "_", "-")
 	return normalized
 }
 
-func isUTF8Encoding(encoding string) bool {
-	switch normalizeEncoding(encoding) {
+// IsUTF8Encoding checks if the encoding is UTF-8 compatible.
+func IsUTF8Encoding(encoding string) bool {
+	switch NormalizeEncoding(encoding) {
 	case "", "UTF-8", "UTF8":
 		return true
 	default:
@@ -23,13 +24,13 @@ func isUTF8Encoding(encoding string) bool {
 	}
 }
 
-// convertToUTF8 converts input bytes to UTF-8 based on the specified encoding.
+// ConvertToUTF8 converts input bytes to UTF-8 based on the specified encoding.
 // Currently supports ISO-8859-1 as a basic fallback.
-func convertToUTF8(encoding string, data []byte) []byte {
-	if isUTF8Encoding(encoding) {
+func ConvertToUTF8(encoding string, data []byte) []byte {
+	if IsUTF8Encoding(encoding) {
 		return data
 	}
-	if cm := getCharmap(encoding); cm != nil {
+	if cm := GetCharmap(encoding); cm != nil {
 		decoded, err := cm.NewDecoder().Bytes(data)
 		if err == nil {
 			return decoded
@@ -38,33 +39,17 @@ func convertToUTF8(encoding string, data []byte) []byte {
 	return data
 }
 
-// encodingWriter converts output to UTF-8 before writing.
-type encodingWriter struct {
-	w        io.Writer
-	encoding string
-}
-
-func (ew *encodingWriter) Write(p []byte) (int, error) {
-	if isUTF8Encoding(ew.encoding) {
-		return ew.w.Write(p)
-	}
-	converted := convertToUTF8(ew.encoding, p)
-	_, err := ew.w.Write(converted)
-	if err != nil {
-		return 0, err
-	}
-	return len(p), nil
-}
-
-func wrapEncodingWriter(w io.Writer, encoding string) io.Writer {
-	if isUTF8Encoding(encoding) {
+// WrapEncodingWriter wraps a writer to convert output to UTF-8 before writing.
+func WrapEncodingWriter(w io.Writer, encoding string) io.Writer {
+	if IsUTF8Encoding(encoding) {
 		return w
 	}
 	return &encodingWriter{w: w, encoding: encoding}
 }
 
-func getCharmap(encoding string) *charmap.Charmap {
-	switch normalizeEncoding(encoding) {
+// GetCharmap returns the Charmap for the given encoding.
+func GetCharmap(encoding string) *charmap.Charmap {
+	switch NormalizeEncoding(encoding) {
 	case "ISO-8859-1", "ISO8859-1", "LATIN1":
 		return charmap.ISO8859_1
 	case "ISO-8859-2", "ISO8859-2", "LATIN2":
@@ -82,4 +67,22 @@ func getCharmap(encoding string) *charmap.Charmap {
 	default:
 		return nil
 	}
+}
+
+// encodingWriter converts output to UTF-8 before writing.
+type encodingWriter struct {
+	w        io.Writer
+	encoding string
+}
+
+func (ew *encodingWriter) Write(p []byte) (int, error) {
+	if IsUTF8Encoding(ew.encoding) {
+		return ew.w.Write(p)
+	}
+	converted := ConvertToUTF8(ew.encoding, p)
+	_, err := ew.w.Write(converted)
+	if err != nil {
+		return 0, err
+	}
+	return len(p), nil
 }
