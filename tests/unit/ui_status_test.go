@@ -3,82 +3,105 @@ package unit
 import (
 	"testing"
 
+	"github.com/inoki/sgreen/internal/session"
 	"github.com/inoki/sgreen/internal/ui"
 )
 
-func TestStatusLine(t *testing.T) {
+func TestFormatMessage(t *testing.T) {
+	win := &session.Window{Number: "0", Title: "Test Window", CmdPath: "/bin/bash"}
+
 	tests := []struct {
 		name   string
 		format string
-		args   []interface{}
 		result string
 	}{
 		{
-			name:   "simple status",
-			format: "Running: %s",
-			args:   []interface{}{"test"},
-			result: "Running: test",
+			name:   "window number",
+			format: "Window %n",
+			result: "Window 0",
 		},
 		{
-			name:   "status with multiple args",
-			format: "Session: %s (Window: %d)",
-			args:   []interface{}{"mysession", 1},
-			result: "Session: mysession (Window: 1)",
+			name:   "window title",
+			format: "Title: %t",
+			result: "Title: Test Window",
 		},
 		{
-			name:   "empty status",
-			format: "",
-			args:   []interface{}{},
-			result: "",
+			name:   "window cmd",
+			format: "Cmd: %t",
+			result: "Cmd: /bin/bash",
+		},
+		{
+			name:   "mixed",
+			format: "Window %n: %t",
+			result: "Window 0: Test Window",
+		},
+		{
+			name:   "bell",
+			format: "Bell %G",
+			result: "Bell \a",
+		},
+		{
+			name:   "literal percent",
+			format: "100%%",
+			result: "100%",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := ui.FormatStatus(tt.format, tt.args...)
+			result := ui.FormatMessage(tt.format, win)
 			if result != tt.result {
-				t.Errorf("FormatStatus() = %q, want %q", result, tt.result)
+				t.Errorf("FormatMessage(%q) = %q, want %q", tt.format, result, tt.result)
 			}
 		})
 	}
 }
 
-func TestStatusUpdate(t *testing.T) {
-	status := &ui.StatusLine{}
-	if status == nil {
-		t.Errorf("StatusLine should not be nil")
-	}
-
-	status.SetMessage("test message")
-	if status.Message != "test message" {
-		t.Errorf("Expected message 'test message', got %s", status.Message)
-	}
-
-	status.SetSession("test_session")
-	if status.Session != "test_session" {
-		t.Errorf("Expected session 'test_session', got %s", status.Session)
-	}
-
-	status.SetWindow(1)
-	if status.Window != 1 {
-		t.Errorf("Expected window 1, got %d", status.Window)
+func TestFormatMessageEmptyWindow(t *testing.T) {
+	win := &session.Window{}
+	result := ui.FormatMessage("Window %n", win)
+	if result != "Window " {
+		t.Errorf("Expected empty window number, got %q", result)
 	}
 }
 
-func TestStatusComponents(t *testing.T) {
-	status := &ui.StatusLine{
-		Session: "session1",
-		Window:  2,
-		Message: "status message",
+func TestStatusLineCreation(t *testing.T) {
+	status := ui.NewStatusLine(true, "Session: %s Window: %n")
+	if status == nil {
+		t.Errorf("NewStatusLine() returned nil")
+	}
+}
+
+func TestActivityMonitor(t *testing.T) {
+	monitor := ui.NewActivityMonitor("Activity in window %n")
+	if monitor == nil {
+		t.Errorf("NewActivityMonitor() returned nil")
 	}
 
-	if status.Session != "session1" {
-		t.Errorf("Expected session 'session1', got %s", status.Session)
+	msg := monitor.GetMessage()
+	if msg != "Activity in window %n" {
+		t.Errorf("GetMessage() = %q, want %q", msg, "Activity in window %n")
 	}
-	if status.Window != 2 {
-		t.Errorf("Expected window 2, got %d", status.Window)
+
+	monitor.Enable()
+	if !monitor.GetMessage() {
+		t.Errorf("GetMessage() returned empty after Enable()")
 	}
-	if status.Message != "status message" {
-		t.Errorf("Expected message 'status message', got %s", status.Message)
+}
+
+func TestSilenceMonitor(t *testing.T) {
+	monitor := ui.NewSilenceMonitor("Silence in window %n", 30)
+	if monitor == nil {
+		t.Errorf("NewSilenceMonitor() returned nil")
+	}
+
+	msg := monitor.GetMessage()
+	if msg != "Silence in window %n" {
+		t.Errorf("GetMessage() = %q, want %q", msg, "Silence in window %n")
+	}
+
+	monitor.Enable()
+	if !monitor.GetMessage() {
+		t.Errorf("GetMessage() returned empty after Enable()")
 	}
 }
