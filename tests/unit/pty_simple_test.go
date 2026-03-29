@@ -51,4 +51,3 @@ func TestPTYPathValidation(t *testing.T) {
 		})
 	}
 }
-

@@ -198,4 +198,3 @@ func TestSessionWindows(t *testing.T) {
 		t.Errorf("Expected CurrentWindow to be 0, got %d", s.CurrentWindow)
 	}
 }
-

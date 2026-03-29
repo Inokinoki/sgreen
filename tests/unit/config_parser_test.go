@@ -181,4 +181,3 @@ func TestConfigNilBindings(t *testing.T) {
 		t.Errorf("Bindings should be nil by default")
 	}
 }
-
