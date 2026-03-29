@@ -39,7 +39,7 @@ func TestDefaultConfig(t *testing.T) {
 func TestFindConfigFileWithSpecified(t *testing.T) {
 	tmpDir := t.TempDir()
 	configFile := filepath.Join(tmpDir, "test.screenrc")
-	
+
 	err := os.WriteFile(configFile, []byte("# test config"), 0644)
 	if err != nil {
 		t.Fatalf("Failed to create test config: %v", err)
@@ -141,7 +141,7 @@ func TestConfigStructure(t *testing.T) {
 		Interrupt:      true,
 		StartupMessage: false,
 		Bell:           false,
-		VBell:         true,
+		VBell:          true,
 		Activity:       "30",
 		Silence:        "15",
 		Hardstatus:     "always",

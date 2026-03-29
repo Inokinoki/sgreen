@@ -140,9 +140,9 @@ func TestScrollbackBufferGetLinesInvalid(t *testing.T) {
 	sb.Append([]byte("test"))
 
 	tests := []struct {
-		name   string
-		start  int
-		end    int
+		name      string
+		start     int
+		end       int
 		expectNil bool
 	}{
 		{"start >= end", 2, 2, true},

@@ -32,9 +32,9 @@ func TestPTYProcessNil(t *testing.T) {
 
 func TestPTYPathValidation(t *testing.T) {
 	tests := []struct {
-		name    string
-		path    string
-		valid   bool
+		name  string
+		path  string
+		valid bool
 	}{
 		{"unix path", "/dev/pts/0", true},
 		{"windows path", "\\\\.\\pipe\\", true},

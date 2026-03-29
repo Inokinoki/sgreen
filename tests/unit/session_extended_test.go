@@ -82,8 +82,8 @@ func TestSessionConfig(t *testing.T) {
 	config := &session.Config{
 		Term:       "xterm-256color",
 		UTF8:       true,
-		Scrollback:  1000,
-		Encoding:    "UTF-8",
+		Scrollback: 1000,
+		Encoding:   "UTF-8",
 	}
 
 	s, err := session.NewWithConfig("test_config", "/bin/bash", []string{}, config)
