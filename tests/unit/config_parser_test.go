@@ -12,7 +12,7 @@ func TestDefaultConfig(t *testing.T) {
 	cfg := config.DefaultConfig()
 
 	if cfg == nil {
-		t.Errorf("DefaultConfig should not return nil")
+		t.Fatal("DefaultConfig should not return nil")
 	}
 
 	if cfg.Escape != "^Aa" {

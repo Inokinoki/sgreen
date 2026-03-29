@@ -40,14 +40,32 @@ func TestPTYPathValidation(t *testing.T) {
 		{"windows path", "\\\\.\\pipe\\", true},
 		{"empty path", "", false},
 		{"relative path", "pts/0", false},
+		{"unix absolute path", "/dev/pty/1", true},
+		{"relative windows path", ".\\pipe\\", false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			valid := tt.path != ""
+			valid := validatePTYPath(tt.path)
 			if valid != tt.valid {
-				t.Errorf("Path validation failed for %s", tt.path)
+				t.Errorf("Path validation failed for %s: got valid=%v, expected valid=%v", tt.path, valid, tt.valid)
 			}
 		})
 	}
+}
+
+func validatePTYPath(path string) bool {
+	if path == "" {
+		return false
+	}
+
+	if path[0] == '/' {
+		return true
+	}
+
+	if len(path) >= 2 && path[0] == '\\' && path[1] == '\\' {
+		return true
+	}
+
+	return false
 }

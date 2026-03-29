@@ -90,12 +90,11 @@ func TestSessionConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create session with config: %v", err)
 	}
-	if err := session.Delete(s.ID); err != nil {
-		t.Logf("Failed to delete session: %v", err)
-	}
-
 	if s == nil {
 		t.Fatalf("Expected session to be created")
+	}
+	if err := session.Delete(s.ID); err != nil {
+		t.Logf("Failed to delete session: %v", err)
 	}
 }
 

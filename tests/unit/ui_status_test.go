@@ -26,11 +26,6 @@ func TestFormatMessage(t *testing.T) {
 			result: "Title: Test Window",
 		},
 		{
-			name:   "window cmd",
-			format: "Cmd: %t",
-			result: "Cmd: /bin/bash",
-		},
-		{
 			name:   "mixed",
 			format: "Window %n: %t",
 			result: "Window 0: Test Window",
@@ -62,6 +57,14 @@ func TestFormatMessageEmptyWindow(t *testing.T) {
 	result := ui.FormatMessage("Window %n", win)
 	if result != "Window " {
 		t.Errorf("Expected empty window number, got %q", result)
+	}
+}
+
+func TestFormatMessageWithEmptyTitle(t *testing.T) {
+	win := &session.Window{Number: "0", Title: "", CmdPath: "/bin/bash"}
+	result := ui.FormatMessage("Cmd: %t", win)
+	if result != "Cmd: /bin/bash" {
+		t.Errorf("FormatMessage with empty title = %q, want %q", result, "Cmd: /bin/bash")
 	}
 }
 
