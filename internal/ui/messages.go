@@ -2,14 +2,14 @@ package ui
 
 import (
 	"fmt"
-	"os"
+	"io"
 	"runtime"
 	"strings"
 	"time"
 )
 
-// ShowStartupMessage displays the startup message
-func ShowStartupMessage(out *os.File, sessName string, windowCount int) {
+// ShowStartupMessage displays startup message
+func ShowStartupMessage(out io.Writer, sessName string, windowCount int) {
 	message := "\r\n*** Welcome to sgreen ***\r\n"
 	message += fmt.Sprintf("Session: %s\r\n", sessName)
 	message += fmt.Sprintf("Windows: %d\r\n", windowCount)
@@ -19,7 +19,7 @@ func ShowStartupMessage(out *os.File, sessName string, windowCount int) {
 }
 
 // ShowBell displays a bell (audible or visual)
-func ShowBell(out *os.File, visual bool) {
+func ShowBell(out io.Writer, visual bool) {
 	if visual {
 		// Visual bell: flash screen
 		_, _ = fmt.Fprintf(out, "\033[?5h") // Turn on reverse video
@@ -31,26 +31,26 @@ func ShowBell(out *os.File, visual bool) {
 	}
 }
 
-// ShowMessage displays a message to the user
-func ShowMessage(out *os.File, message string) {
+// ShowMessage displays a message to user
+func ShowMessage(out io.Writer, message string) {
 	// Clear current line and show message
 	_, _ = fmt.Fprintf(out, "\r\033[K%s\r\n", message)
 }
 
 // ShowActivityMessage shows an activity notification
-func ShowActivityMessage(out *os.File, windowTitle string) {
+func ShowActivityMessage(out io.Writer, windowTitle string) {
 	message := fmt.Sprintf("Activity in window: %s", windowTitle)
 	ShowMessage(out, message)
 }
 
 // ShowSilenceMessage shows a silence notification
-func ShowSilenceMessage(out *os.File, windowTitle string) {
+func ShowSilenceMessage(out io.Writer, windowTitle string) {
 	message := fmt.Sprintf("Silence in window: %s", windowTitle)
 	ShowMessage(out, message)
 }
 
 // ShowVersion displays version information
-func ShowVersion(out *os.File) {
+func ShowVersion(out io.Writer) {
 	message := "\r\n*** sgreen version 0.1.0 ***\r\n"
 	message += "A simplified screen-like terminal multiplexer\r\n"
 	message += "Compatible with GNU screen command-line interface\r\n"
@@ -59,7 +59,7 @@ func ShowVersion(out *os.File) {
 }
 
 // ShowLicense displays license information
-func ShowLicense(out *os.File) {
+func ShowLicense(out io.Writer) {
 	message := "\r\n*** sgreen License ***\r\n"
 	message += "sgreen is open source software.\r\n"
 	message += "See LICENSE file for details.\r\n"
@@ -68,7 +68,7 @@ func ShowLicense(out *os.File) {
 }
 
 // ShowTimeLoad displays time and load average
-func ShowTimeLoad(out *os.File) {
+func ShowTimeLoad(out io.Writer) {
 	now := time.Now()
 	message := fmt.Sprintf("\r\nTime: %s\r\n", now.Format("2006-01-02 15:04:05"))
 
@@ -85,8 +85,8 @@ func ShowTimeLoad(out *os.File) {
 	_, _ = fmt.Fprint(out, message)
 }
 
-// BlankScreen clears the terminal display
-func BlankScreen(out *os.File) {
+// BlankScreen clears terminal display
+func BlankScreen(out io.Writer) {
 	// Clear screen and move cursor to top
 	_, _ = fmt.Fprintf(out, "\033[2J\033[H")
 }
