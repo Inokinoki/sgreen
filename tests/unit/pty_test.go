@@ -163,7 +163,7 @@ func TestPTYCommandCreation(t *testing.T) {
 	}
 }
 
-func TestPTYProcessStructure(t *testing.T) {
+func TestPTYProcessStructureBasic(t *testing.T) {
 	ptyProc := &pty.PTYProcess{
 		Cmd:     exec.Command("/bin/echo", "test"),
 		PtsPath: "/dev/pts/test",

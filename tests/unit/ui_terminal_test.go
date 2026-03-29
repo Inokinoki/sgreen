@@ -13,8 +13,8 @@ func TestDetectTerminalCapabilitiesDefault(t *testing.T) {
 
 	caps := ui.DetectTerminalCapabilities()
 
-	if caps == nil {
-		t.Errorf("DetectTerminalCapabilities should not return nil")
+	if caps.HasColor || caps.Supports256Color || caps.SupportsTrueColor {
+		t.Errorf("Default terminal should have no capabilities set")
 	}
 }
 
