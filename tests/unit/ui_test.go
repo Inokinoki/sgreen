@@ -216,8 +216,8 @@ func TestShowHelp(t *testing.T) {
 
 func TestDetectTerminalCapabilities(t *testing.T) {
 	tests := []struct {
-		name     string
-		term     string
+		name      string
+		term      string
 		colorterm string
 		wantColor bool
 	}{
@@ -242,4 +242,3 @@ func TestDetectTerminalCapabilities(t *testing.T) {
 		})
 	}
 }
-

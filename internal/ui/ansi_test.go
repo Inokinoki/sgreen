@@ -17,10 +17,10 @@ func TestClearScreen(t *testing.T) {
 
 func TestMoveCursor(t *testing.T) {
 	tests := []struct {
-		name  string
-		row   int
-		col   int
-		want  string
+		name string
+		row  int
+		col  int
+		want string
 	}{
 		{"valid position", 5, 10, "\033[5;10H"},
 		{"row less than 1", 0, 10, "\033[1;10H"},
@@ -137,9 +137,9 @@ func TestSetColor256(t *testing.T) {
 
 func TestSetTrueColor(t *testing.T) {
 	tests := []struct {
-		name string
+		name    string
 		r, g, b int
-		want string
+		want    string
 	}{
 		{"black", 0, 0, 0, "\033[38;2;0;0;0m"},
 		{"white", 255, 255, 255, "\033[38;2;255;255;255m"},
@@ -165,4 +165,3 @@ func TestSetTrueColor(t *testing.T) {
 		})
 	}
 }
-
