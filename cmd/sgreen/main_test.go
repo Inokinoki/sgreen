@@ -369,11 +369,10 @@ func TestSocketWord(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := socketWord(tt.count)
-			if got != tt.expected {
-				t.Errorf("socketWord(%d) = %q, want %q", tt.count, got, tt.expected)
-			}
-		})
+		got := socketWord(tt.count)
+		if got != tt.expected {
+			t.Errorf("socketWord(%d) = %q, want %q", tt.count, got, tt.expected)
+		}
 	}
 }
+
