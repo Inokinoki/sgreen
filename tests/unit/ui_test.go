@@ -155,3 +155,26 @@ func TestGetCharmap(t *testing.T) {
 		})
 	}
 }
+
+func TestDefaultAttachConfig(t *testing.T) {
+	config := ui.DefaultAttachConfig()
+	if config == nil {
+		t.Errorf("DefaultAttachConfig() returned nil")
+	}
+
+	if config.CommandChar != 0x01 {
+		t.Errorf("Expected CommandChar 0x01, got %v", config.CommandChar)
+	}
+
+	if config.LiteralChar != 'a' {
+		t.Errorf("Expected LiteralChar 'a', got %v", config.LiteralChar)
+	}
+
+	if config.FlowControl != "off" {
+		t.Errorf("Expected FlowControl off, got %s", config.FlowControl)
+	}
+
+	if config.Scrollback != 1000 {
+		t.Errorf("Expected Scrollback 1000, got %d", config.Scrollback)
+	}
+}
