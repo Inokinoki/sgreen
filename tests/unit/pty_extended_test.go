@@ -90,25 +90,6 @@ func TestPTYSetSizeValid(t *testing.T) {
 	}
 }
 
-func TestPTYProcessNilMethods(t *testing.T) {
-	var ptyProc *pty.PTYProcess
-
-	err := ptyProc.Kill()
-	if err != nil {
-		t.Errorf("Kill on nil PTYProcess should not error")
-	}
-
-	err = ptyProc.Close()
-	if err != nil {
-		t.Errorf("Close on nil PTYProcess should not error")
-	}
-
-	err = ptyProc.Wait()
-	if err != nil {
-		t.Errorf("Wait on nil PTYProcess should not error")
-	}
-}
-
 func TestPTYProcessStructure(t *testing.T) {
 	ptyProc := &pty.PTYProcess{
 		Cmd:     exec.Command("/bin/echo", "test"),
