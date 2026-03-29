@@ -99,7 +99,7 @@ func TestSessionConfig(t *testing.T) {
 	}
 }
 
-func TestCurrentUser(t *testing.T) {
+func TestCurrentUserNotEmpty(t *testing.T) {
 	user := session.CurrentUser()
 	if user == "" {
 		t.Logf("Warning: CurrentUser returned empty string")

@@ -6,7 +6,7 @@ import (
 	"github.com/inoki/sgreen/internal/config"
 )
 
-func TestDefaultConfig(t *testing.T) {
+func TestDefaultConfigFields(t *testing.T) {
 	cfg := config.DefaultConfig()
 	if cfg == nil {
 		t.Fatalf("DefaultConfig should not return nil")
