@@ -84,7 +84,7 @@ func TestActivityMonitor(t *testing.T) {
 	}
 
 	monitor.Enable()
-	if !monitor.GetMessage() {
+	if monitor.GetMessage() == "" {
 		t.Errorf("GetMessage() returned empty after Enable()")
 	}
 }
@@ -101,7 +101,7 @@ func TestSilenceMonitor(t *testing.T) {
 	}
 
 	monitor.Enable()
-	if !monitor.GetMessage() {
+	if monitor.GetMessage() == "" {
 		t.Errorf("GetMessage() returned empty after Enable()")
 	}
 }
