@@ -13,6 +13,7 @@ func TestDefaultConfig(t *testing.T) {
 
 	if cfg == nil {
 		t.Fatal("DefaultConfig should not return nil")
+		return
 	}
 
 	if cfg.Escape != "^Aa" {

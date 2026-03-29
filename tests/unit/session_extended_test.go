@@ -67,6 +67,7 @@ func TestSessionValidation(t *testing.T) {
 			}
 			if s == nil {
 				t.Fatalf("Expected session to be created")
+				return
 			}
 			if s.ID != tt.id {
 				t.Errorf("Expected session ID %s, got %s", tt.id, s.ID)
@@ -92,6 +93,7 @@ func TestSessionConfig(t *testing.T) {
 	}
 	if s == nil {
 		t.Fatalf("Expected session to be created")
+		return
 	}
 	if err := session.Delete(s.ID); err != nil {
 		t.Logf("Failed to delete session: %v", err)
