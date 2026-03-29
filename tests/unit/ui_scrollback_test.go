@@ -264,3 +264,4 @@ func TestScrollbackBufferWriteToEmpty(t *testing.T) {
 		t.Errorf("WriteTo on empty buffer should produce no output")
 	}
 }
+
