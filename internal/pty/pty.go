@@ -88,6 +88,10 @@ func StartWithEnv(cmdPath string, args []string, envOverrides map[string]string)
 
 // getPtsPath gets the path to the PTY slave device
 func getPtsPath(ptyFile *os.File) (string, error) {
+	if ptyFile == nil {
+		return "", os.ErrNotExist
+	}
+
 	name := ptyFile.Name()
 
 	// If the name already looks like a pts path, use it

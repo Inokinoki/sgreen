@@ -238,7 +238,7 @@ func TestParseConfigFile(t *testing.T) {
 func TestParseConfigLineContinuation(t *testing.T) {
 	tmpDir := t.TempDir()
 	configFile := filepath.Join(tmpDir, ".screenrc")
-	content := "hardstatus always\\nlastline\ncaption always\n"
+	content := "hardstatus always \\\nlastline\ncaption always\n"
 	if err := os.WriteFile(configFile, []byte(content), 0644); err != nil {
 		t.Fatal(err)
 	}
