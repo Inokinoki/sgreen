@@ -2,6 +2,7 @@ package unit
 
 import (
 	"bytes"
+	"strings"
 	"testing"
 
 	"github.com/inoki/sgreen/internal/ui"
@@ -195,5 +196,19 @@ func TestPasteBufferEmpty(t *testing.T) {
 	retrieved := ui.GetPasteBuffer()
 	if len(retrieved) != 0 {
 		t.Errorf("GetPasteBuffer() should return empty after setting empty buffer, got %q", string(retrieved))
+	}
+}
+
+func TestShowHelp(t *testing.T) {
+	var buf bytes.Buffer
+	ui.ShowHelp(&buf)
+
+	result := buf.String()
+	if result == "" {
+		t.Errorf("ShowHelp should produce output")
+	}
+
+	if !strings.Contains(result, "sgreen Key Bindings") {
+		t.Errorf("ShowHelp output should contain 'sgreen Key Bindings'")
 	}
 }
