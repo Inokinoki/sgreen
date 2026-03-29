@@ -249,3 +249,131 @@ func TestIsOwnerSessionTarget(t *testing.T) {
 		}
 	}
 }
+
+func TestParseCommandChar(t *testing.T) {
+	tests := []struct {
+		name string
+		input string
+		want byte
+	}{
+		{"empty string", "", 0x01},
+		{"caret notation uppercase", "^A", 0x01},
+		{"caret notation lowercase", "^a", 0x01},
+		{"caret notation middle", "^M", 0x0D},
+		{"hex notation", "\\x01", 0x01},
+		{"hex notation custom", "\\x1b", 0x1b},
+		{"single character", "a", 'a'},
+		{"invalid caret", "^@", 0x01},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := parseCommandChar(tt.input)
+			if got != tt.want {
+				t.Errorf("parseCommandChar(%q) = %v, want %v", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestResolveSessionName(t *testing.T) {
+	tests := []struct {
+		name     string
+		flag     string
+		args     []string
+		expected string
+	}{
+		{"flag takes precedence", "mysession", []string{"other"}, "mysession"},
+		{"args when no flag", "", []string{"arg_session"}, "arg_session"},
+		{"no flag no args", "", []string{}, ""},
+		{"args ignored with flag", "flag_session", []string{"arg1", "arg2"}, "flag_session"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := resolveSessionName(tt.flag, tt.args)
+			if got != tt.expected {
+				t.Errorf("resolveSessionName(%q, %v) = %q, want %q", tt.flag, tt.args, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestNormalizeArgs(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    []string
+		expected []string
+	}{
+		{"no special args", []string{"-r", "-S", "test"}, []string{"-r", "-S", "test"}},
+		{"dmS flag", []string{"-dmS", "test"}, []string{"-d", "-m", "-S", "test"}},
+		{"dmS combined", []string{"-dmSmysession"}, []string{"-d", "-m", "-S", "mysession"}},
+		{"dm flag", []string{"-dm"}, []string{"-d", "-m"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := normalizeArgs(tt.input)
+			if len(got) != len(tt.expected) {
+				t.Errorf("normalizeArgs(%v) len = %d, want %d", tt.input, len(got), len(tt.expected))
+			}
+			for i := range tt.expected {
+				if i >= len(got) || got[i] != tt.expected[i] {
+					break
+				}
+			}
+		})
+	}
+}
+
+func TestEnsureInteractiveShellArgs(t *testing.T) {
+	tests := []struct {
+		name     string
+		cmdPath  string
+		args     []string
+		expected []string
+	}{
+		{"zsh with no args", "/bin/zsh", nil, []string{"-i"}},
+		{"bash with no args", "/bin/bash", nil, []string{"-i"}},
+		{"sh with no args", "/bin/sh", nil, []string{"-i"}},
+		{"ksh with no args", "/bin/ksh", nil, []string{"-i"}},
+		{"fish with no args", "/usr/bin/fish", nil, []string{"-i"}},
+		{"custom shell with no args", "/bin/custom", nil, nil},
+		{"shell with args", "/bin/bash", []string{"-c", "echo hi"}, []string{"-c", "echo hi"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ensureInteractiveShellArgs(tt.cmdPath, tt.args)
+			if len(got) != len(tt.expected) {
+				t.Errorf("ensureInteractiveShellArgs(%q, %v) len = %d, want %d", tt.cmdPath, tt.args, len(got), len(tt.expected))
+			}
+			for i := range tt.expected {
+				if i >= len(got) || got[i] != tt.expected[i] {
+					break
+				}
+			}
+		})
+	}
+}
+
+func TestSocketWord(t *testing.T) {
+	tests := []struct {
+		count    int
+		expected string
+	}{
+		{1, "Socket"},
+		{2, "Sockets"},
+		{0, "Sockets"},
+		{10, "Sockets"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := socketWord(tt.count)
+			if got != tt.expected {
+				t.Errorf("socketWord(%d) = %q, want %q", tt.count, got, tt.expected)
+			}
+		})
+	}
+}
