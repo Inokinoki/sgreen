@@ -242,3 +242,4 @@ func TestDetectTerminalCapabilities(t *testing.T) {
 		})
 	}
 }
+

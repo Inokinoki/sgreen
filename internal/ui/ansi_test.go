@@ -165,3 +165,4 @@ func TestSetTrueColor(t *testing.T) {
 		})
 	}
 }
+
