@@ -161,7 +161,7 @@ func TestGetCharmap(t *testing.T) {
 func TestDefaultAttachConfig(t *testing.T) {
 	config := ui.DefaultAttachConfig()
 	if config == nil {
-		t.Errorf("DefaultAttachConfig() returned nil")
+		t.Fatal("DefaultAttachConfig() returned nil")
 	}
 
 	if config.CommandChar != 0x01 {
