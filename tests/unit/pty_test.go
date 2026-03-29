@@ -155,6 +155,7 @@ func TestPTYCommandCreation(t *testing.T) {
 			cmd := exec.Command(tt.cmd, tt.args...)
 			if cmd == nil {
 				t.Errorf("Failed to create command: %s %v", tt.cmd, tt.args)
+				return
 			}
 			if cmd.Path != tt.cmd {
 				t.Errorf("Expected path %s, got %s", tt.cmd, cmd.Path)

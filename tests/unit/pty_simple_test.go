@@ -8,8 +8,8 @@ import (
 
 func TestPTYProcessCreation(t *testing.T) {
 	ptyProc := &pty.PTYProcess{}
-	if ptyProc == nil {
-		t.Errorf("PTYProcess should not be nil")
+	if ptyProc.PtsPath != "" {
+		t.Errorf("PTYProcess should have empty PtsPath")
 	}
 }
 
