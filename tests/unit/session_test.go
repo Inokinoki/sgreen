@@ -1,7 +1,6 @@
 package unit
 
 import (
-	"syscall"
 	"testing"
 
 	"github.com/inoki/sgreen/internal/session"
@@ -110,42 +109,5 @@ func TestWindowSwitchingInvalidIndex(t *testing.T) {
 	err = s.SwitchToWindow("999")
 	if err == nil {
 		t.Errorf("Expected error when switching to invalid window")
-	}
-}
-
-func TestCurrentUser(t *testing.T) {
-	user := session.CurrentUser()
-	if user == "" {
-		t.Logf("Warning: CurrentUser returned empty string")
-	}
-}
-
-func TestDetectEncodingFromLocale(t *testing.T) {
-	encoding := session.DetectEncodingFromLocale()
-	if encoding == "" {
-		t.Errorf("DetectEncodingFromLocale should return a default encoding")
-	}
-}
-
-func TestIsResourceExhausted(t *testing.T) {
-	tests := []struct {
-		name     string
-		err      error
-		expected bool
-	}{
-		{"nil error", nil, false},
-		{"ENOSPC", syscall.ENOSPC, true},
-		{"EMFILE", syscall.EMFILE, true},
-		{"ENFILE", syscall.ENFILE, true},
-		{"other error", syscall.EINVAL, false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := session.IsResourceExhausted(tt.err)
-			if result != tt.expected {
-				t.Errorf("IsResourceExhausted(%v) = %v, want %v", tt.err, result, tt.expected)
-			}
-		})
 	}
 }

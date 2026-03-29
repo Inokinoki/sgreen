@@ -178,3 +178,22 @@ func TestDefaultAttachConfig(t *testing.T) {
 		t.Errorf("Expected Scrollback 1000, got %d", config.Scrollback)
 	}
 }
+
+func TestPasteBuffer(t *testing.T) {
+	content := []byte("test content")
+	ui.SetPasteBuffer(content)
+
+	retrieved := ui.GetPasteBuffer()
+	if string(retrieved) != string(content) {
+		t.Errorf("GetPasteBuffer() = %q, want %q", string(retrieved), string(content))
+	}
+}
+
+func TestPasteBufferEmpty(t *testing.T) {
+	ui.SetPasteBuffer([]byte{})
+
+	retrieved := ui.GetPasteBuffer()
+	if len(retrieved) != 0 {
+		t.Errorf("GetPasteBuffer() should return empty after setting empty buffer, got %q", string(retrieved))
+	}
+}
