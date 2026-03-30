@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -96,7 +97,12 @@ func TestSelectReattachSession_MultiuserUnnamedMultiple(t *testing.T) {
 
 func TestSelectReattachSession_OneDetached(t *testing.T) {
 	sess := &session.Session{ID: "detached", Pid: os.Getpid()}
-	sess.PTYProcess = &pty.PTYProcess{Pty: &os.File{}}
+
+	osFile := os.NewFile(1, "")
+	if osFile == nil {
+		t.Skip("Cannot create mock file descriptor")
+	}
+	sess.PTYProcess = &pty.PTYProcess{Pty: osFile}
 
 	selected, errMsg, printList := selectReattachSession(
 		[]*session.Session{sess},
