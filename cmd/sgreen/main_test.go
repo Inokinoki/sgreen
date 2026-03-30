@@ -7,7 +7,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/inoki/sgreen/internal/pty"
 	"github.com/inoki/sgreen/internal/session"
 )
 
@@ -98,15 +97,6 @@ func TestSelectReattachSession_OneDetached(t *testing.T) {
 	sess := &session.Session{ID: "detached", Pid: os.Getpid()}
 	win := &session.Window{Pid: os.Getpid()}
 	sess.Windows = []*session.Window{win}
-
-	osFile := os.NewFile(1, "")
-	if osFile == nil {
-		t.Skip("Cannot create mock file descriptor")
-	}
-	sess.PTYProcess = &pty.PTYProcess{Pty: osFile}
-
-	pty := sess.GetPTYProcess()
-	t.Logf("GetPTYProcess returned: %v, IsAlive: %v", pty != nil, pty != nil && pty.IsAlive())
 
 	selected, errMsg, printList := selectReattachSession(
 		[]*session.Session{sess},
