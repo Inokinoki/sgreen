@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/inoki/sgreen/internal/pty"
 	"github.com/inoki/sgreen/internal/session"
 )
 
@@ -95,6 +96,7 @@ func TestSelectReattachSession_MultiuserUnnamedMultiple(t *testing.T) {
 
 func TestSelectReattachSession_OneDetached(t *testing.T) {
 	sess := &session.Session{ID: "detached", Pid: os.Getpid()}
+	sess.PTYProcess = &pty.PTYProcess{Pty: &os.File{}}
 
 	selected, errMsg, printList := selectReattachSession(
 		[]*session.Session{sess},
