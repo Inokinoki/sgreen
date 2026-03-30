@@ -123,7 +123,7 @@ func attachLoopWindows(in *os.File, out *os.File, errOut *os.File, sess *session
 		outputWriter := createOutputWriterForWindow(out, config, win, logDir)
 
 		// Apply encoding conversion for this window if needed
-		encodedOutput := wrapEncodingWriter(outputWriter, win.Encoding)
+		encodedOutput := WrapEncodingWriter(outputWriter, win.Encoding)
 
 		// Wrap output writer to also write to scrollback
 		scrollbackWriter := io.MultiWriter(encodedOutput, &scrollbackWriter{scrollback: scrollback})

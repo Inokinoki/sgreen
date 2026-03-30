@@ -1530,6 +1530,11 @@ func findAttachedSessions(sessions []*session.Session) []*session.Session {
 
 // isProcessAliveByPID checks if a process is alive by PID
 func isProcessAliveByPID(pid int) bool {
+	// If PID is the current process, it's definitely alive
+	if pid == os.Getpid() {
+		return true
+	}
+
 	process, err := os.FindProcess(pid)
 	if err != nil {
 		return false

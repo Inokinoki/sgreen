@@ -52,7 +52,11 @@ func ensureSgreenBinary(tb testing.TB) string {
 			return
 		}
 
-		outPath := filepath.Join(tmpDir, "sgreen")
+		binName := "sgreen"
+		if runtime.GOOS == "windows" {
+			binName = "sgreen.exe"
+		}
+		outPath := filepath.Join(tmpDir, binName)
 		buildCmd := exec.Command("go", "build", "-o", outPath, "./cmd/sgreen")
 		buildCmd.Dir = modRoot
 		buildCmd.Env = os.Environ()
