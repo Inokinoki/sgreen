@@ -96,6 +96,8 @@ func TestSelectReattachSession_MultiuserUnnamedMultiple(t *testing.T) {
 
 func TestSelectReattachSession_OneDetached(t *testing.T) {
 	sess := &session.Session{ID: "detached", Pid: os.Getpid()}
+	win := &session.Window{Pid: os.Getpid()}
+	sess.Windows = []*session.Window{win}
 
 	osFile := os.NewFile(1, "")
 	if osFile == nil {
