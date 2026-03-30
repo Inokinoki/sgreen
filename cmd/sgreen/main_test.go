@@ -103,6 +103,9 @@ func TestSelectReattachSession_OneDetached(t *testing.T) {
 	}
 	sess.PTYProcess = &pty.PTYProcess{Pty: osFile}
 
+	pty := sess.GetPTYProcess()
+	t.Logf("GetPTYProcess returned: %v, IsAlive: %v", pty != nil, pty != nil && pty.IsAlive())
+
 	selected, errMsg, printList := selectReattachSession(
 		[]*session.Session{sess},
 		"",
