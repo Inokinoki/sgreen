@@ -35,6 +35,12 @@ type Session struct {
 	AllowedUsers []string       `json:"allowed_users,omitempty"`
 	Layouts      map[string]int `json:"layouts,omitempty"`
 
+	// Runtime state maintained by the session daemon (Unix). Attached is
+	// true while at least one client is attached; DaemonPid identifies the
+	// relay daemon that owns the PTY master.
+	Attached  bool `json:"attached,omitempty"`
+	DaemonPid int  `json:"daemon_pid,omitempty"`
+
 	// Window management
 	Windows       []*Window `json:"windows,omitempty"`     // All windows in this session
 	CurrentWindow int       `json:"current_window"`        // Index of current window
@@ -209,18 +215,6 @@ func Load(id string) (*Session, error) {
 	// Check in-memory first
 	if sess, exists := sessions[id]; exists {
 		sessionsMu.RUnlock()
-		// Check if the process is still alive
-		if sess.PTYProcess != nil && !sess.PTYProcess.IsAlive() {
-			// Process died, try to reconnect if we have a pts path
-			if sess.PtsPath != "" {
-				sessionsMu.Lock()
-				if err := sess.ReconnectPTY(); err == nil {
-					sessionsMu.Unlock()
-					return sess, nil
-				}
-				sessionsMu.Unlock()
-			}
-		}
 		return sess, nil
 	}
 	sessionsMu.RUnlock()
@@ -231,12 +225,9 @@ func Load(id string) (*Session, error) {
 		return nil, err
 	}
 
-	// Try to reconnect to the PTY if we have a path and process is still alive
-	if sess.PtsPath != "" && isProcessAlive(sess.Pid) {
-		if err := sess.ReconnectPTY(); err != nil {
-			_ = err
-		}
-	}
+	// NOTE: the PTY master is owned by the session daemon; clients attach
+	// through the daemon socket. Opening the slave device here would
+	// corrupt the terminal line discipline, so no PTY reconnect happens.
 
 	sessionsMu.Lock()
 	sessions[id] = sess
@@ -344,37 +335,15 @@ func List() []*Session {
 
 	// Add memory sessions first
 	for _, sess := range memorySessions {
-		// Clean up dead sessions
-		if sess.PTYProcess != nil && !sess.PTYProcess.IsAlive() {
-			// Try to reconnect if we have a pts path
-			if sess.PtsPath != "" && isProcessAlive(sess.Pid) {
-				if err := sess.ReconnectPTY(); err != nil {
-					_ = err
-				}
-			}
-		}
 		result = append(result, sess)
 		seen[sess.ID] = true
 	}
 
-	// Add disk sessions that aren't in memory
+	// Add disk sessions that aren't in memory. The PTY master belongs to
+	// the session daemon; cross-process attach goes through the daemon
+	// socket, so there is nothing to reconnect here.
 	for _, sess := range diskSessions {
 		if !seen[sess.ID] {
-			// Try to reconnect windows if processes are still alive
-			hasAliveWindow := false
-			for _, win := range sess.Windows {
-				if win.PtsPath != "" && isProcessAlive(win.Pid) {
-					if err := sess.ReconnectPTY(); err == nil {
-						hasAliveWindow = true
-					}
-				}
-			}
-			// Also try old method for backward compatibility
-			if !hasAliveWindow && sess.PtsPath != "" && isProcessAlive(sess.Pid) {
-				if err := sess.ReconnectPTY(); err != nil {
-					_ = err
-				}
-			}
 			result = append(result, sess)
 		}
 	}
@@ -482,36 +451,77 @@ func loadFromDisk(id string) (*Session, error) {
 	return &sess, nil
 }
 
-// Delete removes a session from memory and disk
+// SocketPath returns the daemon socket path for a session ID.
+func SocketPath(id string) string {
+	return filepath.Join(sessionsDir, id+".sock")
+}
+
+// FilePath returns the JSON session file path for a session ID.
+func FilePath(id string) string {
+	return filepath.Join(sessionsDir, id+".json")
+}
+
+// LoadFromFile loads a session from an explicit file path without
+// consulting or populating the in-memory registry. Used by the session
+// daemon, which owns the runtime fields of its session file.
+func LoadFromFile(path, id string) (*Session, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var sess Session
+	if err := json.Unmarshal(data, &sess); err != nil {
+		return nil, err
+	}
+	if sess.ID == "" {
+		sess.ID = id
+	}
+	return &sess, nil
+}
+
+// RemoveFile deletes the session file and socket for a session that is
+// being torn down by its daemon.
+func RemoveFile(path, id string) error {
+	_ = os.Remove(SocketPath(id))
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	sessionsMu.Lock()
+	delete(sessions, id)
+	sessionsMu.Unlock()
+	return nil
+}
+
+// Delete removes a session from memory and disk. For sessions owned by
+// another process (disk-only), this removes the files without touching the
+// owning processes; use the daemon QUIT command to terminate a live
+// session cleanly.
 func Delete(id string) error {
 	sessionsMu.Lock()
-	defer sessionsMu.Unlock()
-
 	sess, exists := sessions[id]
-	if !exists {
-		return fmt.Errorf("session %s not found", id)
+	if exists {
+		delete(sessions, id)
 	}
+	sessionsMu.Unlock()
 
-	// Kill all processes in all windows
-	for _, win := range sess.Windows {
-		if win.GetPTYProcess() != nil {
-			_ = win.GetPTYProcess().Kill()
+	if exists {
+		// Locally-owned session: kill all processes in all windows.
+		for _, win := range sess.Windows {
+			if win.GetPTYProcess() != nil {
+				_ = win.GetPTYProcess().Kill()
+			}
+		}
+		// Also kill legacy PTY process if exists.
+		if sess.PTYProcess != nil {
+			_ = sess.PTYProcess.Kill()
 		}
 	}
 
-	// Also kill legacy PTY process if exists
-	if sess.PTYProcess != nil {
-		_ = sess.PTYProcess.Kill()
-	}
-
-	// Remove from memory
-	delete(sessions, id)
-
-	// Remove from disk
-	filePath := filepath.Join(sessionsDir, id+".json")
-	if err := os.Remove(filePath); err != nil && !os.IsNotExist(err) {
+	// Remove from disk (session file and daemon socket).
+	if err := os.Remove(filepath.Join(sessionsDir, id+".json")); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("failed to remove session file: %w", err)
 	}
+	_ = os.Remove(SocketPath(id))
 
 	return nil
 }

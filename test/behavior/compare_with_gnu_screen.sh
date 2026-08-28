@@ -5,6 +5,14 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SGREEN_BIN="${SGREEN_BIN:-$ROOT_DIR/build/sgreen}"
 SCREEN_BIN="${SCREEN_BIN:-/usr/bin/screen}"
 REPORT_PATH="${REPORT_PATH:-$ROOT_DIR/test/behavior/gnu_screen_comparison_results.md}"
+# Use zsh when available (login-shell quoting parity with the original
+# environment), otherwise fall back to bash; a missing shell made every
+# case silently report exit 0 with no output.
+if command -v zsh >/dev/null 2>&1; then
+  RUN_SHELL="$(command -v zsh)"
+else
+  RUN_SHELL="/bin/bash"
+fi
 TIMEOUT_SEC="${TIMEOUT_SEC:-8}"
 
 if [[ ! -x "$SGREEN_BIN" ]]; then
@@ -32,7 +40,7 @@ run_cmd() {
   (
     set +e
     env HOME="$home_dir" SCREENDIR="$screen_dir" STY="$sty_value" TERM="$term_value" \
-      perl -e 'alarm shift @ARGV; exec @ARGV' "$TIMEOUT_SEC" /bin/zsh -lc "$cmd" \
+      perl -e 'alarm shift @ARGV; exec @ARGV' "$TIMEOUT_SEC" "$RUN_SHELL" -c "$cmd" \
       >"$out_file" 2>&1
     echo "$?" >"$code_file"
   )

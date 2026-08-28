@@ -5,6 +5,9 @@ package pty
 
 // IsAlive checks if the process is still running (Windows version)
 func (p *PTYProcess) IsAlive() bool {
+	if p.remote != nil {
+		return p.remote.Alive()
+	}
 	if p.Cmd == nil || p.Cmd.Process == nil {
 		// If we don't have a command reference, we can't check
 		// In this case, assume it's alive if we can access the PTY

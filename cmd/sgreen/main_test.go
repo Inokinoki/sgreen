@@ -7,8 +7,19 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/inoki/sgreen/internal/daemon"
 	"github.com/inoki/sgreen/internal/session"
 )
+
+// TestMain guards against the forked session daemon re-running the test
+// suite: startSessionDaemon execs the test binary with
+// SGREEN_SESSION_DAEMON=1, which must run the daemon instead of tests.
+func TestMain(m *testing.M) {
+	if daemon.RunFromEnv() {
+		os.Exit(0)
+	}
+	os.Exit(m.Run())
+}
 
 func TestSelectReattachSession_NoSessionsWithName(t *testing.T) {
 	_, errMsg, printList := selectReattachSession(nil, "demo", false, nil, nil)
@@ -33,11 +44,13 @@ func TestSelectReattachSession_NamedAttachedRequiresForce(t *testing.T) {
 	}
 
 	_, errMsg, printList := selectReattachSession([]*session.Session{sess}, "demo", false, loadByName, isAttached)
-	if !strings.Contains(errMsg, "is attached") {
+	// GNU screen lists the attached session, then reports it as not
+	// resumable.
+	if errMsg != "There is no screen to be resumed matching demo." {
 		t.Fatalf("unexpected error message: %q", errMsg)
 	}
-	if printList {
-		t.Fatalf("printList = true, want false")
+	if !printList {
+		t.Fatalf("printList = false, want true")
 	}
 
 	selected, errMsg, printList := selectReattachSession([]*session.Session{sess}, "demo", true, loadByName, isAttached)
@@ -66,8 +79,8 @@ func TestSelectReattachSession_UnnamedAttachedOnly(t *testing.T) {
 	if errMsg != "There is no screen to be resumed." {
 		t.Fatalf("unexpected error message: %q", errMsg)
 	}
-	if printList {
-		t.Fatalf("printList = true, want false")
+	if !printList {
+		t.Fatalf("printList = false, want true")
 	}
 }
 
@@ -85,7 +98,7 @@ func TestSelectReattachSession_MultiuserUnnamedMultiple(t *testing.T) {
 	if selected != nil {
 		t.Fatalf("expected no selected session")
 	}
-	if errMsg != "Multiple sessions found. Specify session name with -x:" {
+	if errMsg != "There are several screens on:" {
 		t.Fatalf("unexpected error message: %q", errMsg)
 	}
 	if !printList {

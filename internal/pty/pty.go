@@ -17,6 +17,27 @@ type PTYProcess struct {
 	Cmd     *exec.Cmd
 	Pty     *os.File
 	PtsPath string // Path to the PTY slave device
+
+	// remote is set when this endpoint is a connection to a session daemon
+	// rather than a locally-owned master fd.
+	remote *Remote
+}
+
+// NewRemoteProcess builds a PTYProcess backed by a daemon connection.
+func NewRemoteProcess(remote *Remote, ptsPath string) *PTYProcess {
+	return &PTYProcess{remote: remote, PtsPath: ptsPath}
+}
+
+// IsRemote reports whether this endpoint relays through a session daemon.
+func (p *PTYProcess) IsRemote() bool { return p != nil && p.remote != nil }
+
+// DataConn returns the data endpoint used for relay: the daemon socket
+// connection when remote, otherwise the local PTY master.
+func (p *PTYProcess) DataConn() io.ReadWriteCloser {
+	if p.remote != nil {
+		return p.remote
+	}
+	return p.Pty
 }
 
 // Start creates a new PTY process with the given command and arguments
@@ -123,16 +144,19 @@ func getPtsPath(ptyFile *os.File) (string, error) {
 func (p *PTYProcess) Pipe(clientIn io.Reader, clientOut io.Writer) error {
 	// Copy from client input to PTY
 	go func() {
-		_, _ = io.Copy(p.Pty, clientIn)
+		_, _ = io.Copy(p.DataConn(), clientIn)
 	}()
 
 	// Copy from PTY to client output (main loop)
-	_, err := io.Copy(clientOut, p.Pty)
+	_, err := io.Copy(clientOut, p.DataConn())
 	return err
 }
 
 // SetSize sets the size of the PTY
 func (p *PTYProcess) SetSize(rows, cols uint16) error {
+	if p.remote != nil {
+		return p.remote.Resize(rows, cols)
+	}
 	if p.Pty == nil {
 		return os.ErrInvalid
 	}
@@ -144,6 +168,9 @@ func (p *PTYProcess) SetSize(rows, cols uint16) error {
 
 // Close closes the PTY file
 func (p *PTYProcess) Close() error {
+	if p.remote != nil {
+		return p.remote.Close()
+	}
 	if p.Pty != nil {
 		return p.Pty.Close()
 	}
@@ -160,6 +187,9 @@ func (p *PTYProcess) Wait() error {
 
 // Kill kills the underlying process
 func (p *PTYProcess) Kill() error {
+	if p.remote != nil {
+		return p.remote.Quit()
+	}
 	if p.Cmd != nil && p.Cmd.Process != nil {
 		return p.Cmd.Process.Kill()
 	}

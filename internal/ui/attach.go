@@ -250,7 +250,10 @@ func attachLoop(in *os.File, out *os.File, errOut *os.File, sess *session.Sessio
 		// Copy from PTY to output with flow control
 		outputDone := make(chan error, 1)
 		go func() {
-			outputDone <- copyWithFlowControl(ptyProc.Pty, scrollbackWriter, flowControl)
+			debugAttach("attach: output copy starting (remote=%v)", ptyProc.IsRemote())
+			err := copyWithFlowControl(ptyProc.DataConn(), scrollbackWriter, flowControl)
+			debugAttach("attach: output copy finished err=%v", err)
+			outputDone <- err
 		}()
 
 		// Create a reader that detects detach sequence and window commands
@@ -259,7 +262,7 @@ func attachLoop(in *os.File, out *os.File, errOut *os.File, sess *session.Sessio
 		// Copy from input to PTY, with detach detection and window commands
 		inputDone := make(chan error, 1)
 		go func() {
-			_, err := io.Copy(ptyProc.Pty, detachReader)
+			_, err := io.Copy(ptyProc.DataConn(), detachReader)
 			inputDone <- err
 		}()
 
@@ -495,7 +498,7 @@ func handleWindowCommand(sess *session.Session, cmd *ErrWindowCommand, config *A
 		if len(pasteContent) > 0 {
 			win := sess.GetCurrentWindow()
 			if win != nil && win.GetPTYProcess() != nil {
-				if _, err := win.GetPTYProcess().Pty.Write(pasteContent); err != nil {
+				if _, err := win.GetPTYProcess().DataConn().Write(pasteContent); err != nil {
 					return err
 				}
 			}

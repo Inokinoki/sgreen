@@ -190,8 +190,8 @@ func writeSessionFile(tb testing.TB, homeDir, id string, pid int) {
 
 func TestVersion(t *testing.T) {
 	out, code := runSgreen(t, []string{"-v"}, nil)
-	if code != 1 {
-		t.Fatalf("sgreen -v: exit code %d, want 1 (GNU screen style)\n%s", code, out)
+	if code != 0 {
+		t.Fatalf("sgreen -v: exit code %d, want 0 (GNU screen style)\n%s", code, out)
 	}
 	if !strings.Contains(out, "sgreen") || !strings.Contains(out, "version") {
 		t.Fatalf("sgreen -v: output should contain 'sgreen' and 'version'\n%s", out)
@@ -200,8 +200,8 @@ func TestVersion(t *testing.T) {
 
 func TestHelpShort(t *testing.T) {
 	out, code := runSgreen(t, []string{"-help"}, nil)
-	if code != 1 {
-		t.Fatalf("sgreen -help: exit code %d, want 1\n%s", code, out)
+	if code != 0 {
+		t.Fatalf("sgreen -help: exit code %d, want 0 (GNU screen style)\n%s", code, out)
 	}
 	if !strings.Contains(out, "Usage:") || !strings.Contains(out, "sgreen") {
 		t.Fatalf("sgreen -help: output should contain 'Usage:' and 'sgreen'\n%s", out)
@@ -210,8 +210,8 @@ func TestHelpShort(t *testing.T) {
 
 func TestHelpLong(t *testing.T) {
 	out, code := runSgreen(t, []string{"-help"}, nil)
-	if code != 1 {
-		t.Fatalf("sgreen -help: exit code %d, want 1\n%s", code, out)
+	if code != 0 {
+		t.Fatalf("sgreen -help: exit code %d, want 0 (GNU screen style)\n%s", code, out)
 	}
 	if !strings.Contains(out, "Usage:") {
 		t.Fatalf("sgreen -help: output should contain 'Usage:'\n%s", out)
@@ -291,8 +291,8 @@ func TestWipeNoSessions(t *testing.T) {
 
 func TestQuietWipeNoSessions(t *testing.T) {
 	out, code := runSgreen(t, []string{"-q", "-wipe"}, nil)
-	if code != 8 {
-		t.Fatalf("sgreen -q -wipe: exit code %d, want 8 (GNU screen quiet no-sessions)\n%s", code, out)
+	if code != 9 {
+		t.Fatalf("sgreen -q -wipe: exit code %d, want 9 (GNU screen quiet no-sessions)\n%s", code, out)
 	}
 	if strings.TrimSpace(out) != "" {
 		t.Fatalf("sgreen -q -wipe: expected no output, got %q", out)
@@ -382,8 +382,8 @@ func TestUnknownFlag(t *testing.T) {
 
 func TestQuiet(t *testing.T) {
 	out, code := runSgreen(t, []string{"-q", "-ls"}, nil)
-	if code != 8 {
-		t.Fatalf("sgreen -q -ls: exit code %d, want 8 (GNU screen quiet no-sessions)\n%s", code, out)
+	if code != 9 {
+		t.Fatalf("sgreen -q -ls: exit code %d, want 9 (GNU screen quiet no-sessions)\n%s", code, out)
 	}
 	if strings.TrimSpace(out) != "" {
 		t.Fatalf("sgreen -q -ls: expected no output, got %q", out)
@@ -400,8 +400,8 @@ func TestIgnoreSTY(t *testing.T) {
 
 func TestVersionSingleLine(t *testing.T) {
 	out, code := runSgreen(t, []string{"-v"}, nil)
-	if code != 1 {
-		t.Fatalf("sgreen -v: exit code %d, want 1\n%s", code, out)
+	if code != 0 {
+		t.Fatalf("sgreen -v: exit code %d, want 0 (GNU screen style)\n%s", code, out)
 	}
 	lines := strings.Split(strings.TrimSpace(out), "\n")
 	if len(lines) != 1 {
@@ -413,8 +413,8 @@ func TestVersionSingleLine(t *testing.T) {
 
 func TestVersionContainsVersionNumber(t *testing.T) {
 	out, code := runSgreen(t, []string{"-v"}, nil)
-	if code != 1 {
-		t.Fatalf("sgreen -v: exit code %d, want 1\n%s", code, out)
+	if code != 0 {
+		t.Fatalf("sgreen -v: exit code %d, want 0 (GNU screen style)\n%s", code, out)
 	}
 	if !strings.Contains(out, "Screen version ") || !strings.Contains(out, " (sgreen)") {
 		t.Fatalf("sgreen -v: output should contain screen-style version token\n%s", out)
@@ -423,8 +423,8 @@ func TestVersionContainsVersionNumber(t *testing.T) {
 
 func TestVersionFormatScreenStyle(t *testing.T) {
 	out, code := runSgreen(t, []string{"-v"}, nil)
-	if code != 1 {
-		t.Fatalf("sgreen -v: exit code %d, want 1\n%s", code, out)
+	if code != 0 {
+		t.Fatalf("sgreen -v: exit code %d, want 0 (GNU screen style)\n%s", code, out)
 	}
 	if !strings.Contains(out, "Screen version") {
 		t.Fatalf("sgreen -v: expected screen-style version prefix\n%s", out)
@@ -433,8 +433,8 @@ func TestVersionFormatScreenStyle(t *testing.T) {
 
 func TestHelpContainsKeyOptions(t *testing.T) {
 	out, code := runSgreen(t, []string{"-help"}, nil)
-	if code != 1 {
-		t.Fatalf("sgreen -help: exit code %d, want 1\n%s", code, out)
+	if code != 0 {
+		t.Fatalf("sgreen -help: exit code %d, want 0 (GNU screen style)\n%s", code, out)
 	}
 	for _, sub := range []string{"-r", "-R", "-ls", "-d", "-D", "-S"} {
 		if !strings.Contains(out, sub) {
@@ -445,8 +445,8 @@ func TestHelpContainsKeyOptions(t *testing.T) {
 
 func TestHelpMentionsDetach(t *testing.T) {
 	out, code := runSgreen(t, []string{"-help"}, nil)
-	if code != 1 {
-		t.Fatalf("sgreen -help: exit code %d, want 1\n%s", code, out)
+	if code != 0 {
+		t.Fatalf("sgreen -help: exit code %d, want 0 (GNU screen style)\n%s", code, out)
 	}
 	if !strings.Contains(out, "detach") && !strings.Contains(out, "Detach") &&
 		!strings.Contains(out, "Ctrl+A") && !strings.Contains(out, "C-a") {
@@ -655,8 +655,12 @@ func TestListSingleSessionShowsScreenStyleSummary(t *testing.T) {
 	if !strings.Contains(out, "There is a screen on:") {
 		t.Fatalf("sgreen -ls with one session: expected 'There is a screen on:'\n%s", out)
 	}
-	if !strings.Contains(out, "(demo)") {
-		t.Fatalf("sgreen -ls with one session: expected session name '(demo)'\n%s", out)
+	// GNU listing format: first column is the socket name pid.<name>.
+	if !strings.Contains(out, fmt.Sprintf("%d.demo", os.Getpid())) {
+		t.Fatalf("sgreen -ls with one session: expected socket name '%d.demo'\n%s", os.Getpid(), out)
+	}
+	if !strings.Contains(out, "(Detached)") {
+		t.Fatalf("sgreen -ls with one session: expected '(Detached)' status\n%s", out)
 	}
 	if !strings.Contains(out, "1 Socket in ") {
 		t.Fatalf("sgreen -ls with one session: expected socket summary line\n%s", out)
@@ -674,9 +678,11 @@ func TestDetachedCreateDmSParses(t *testing.T) {
 }
 
 func TestShortHRequiresArgument(t *testing.T) {
+	// Verified against GNU screen 4.09: bare "-h" prints usage and exits 0
+	// (-h num still parses its scrollback value when present).
 	out, code := runSgreen(t, []string{"-h"}, nil)
-	if code == 0 {
-		t.Fatalf("sgreen -h: exit code 0, want non-zero because -h expects scrollback value\n%s", out)
+	if code != 0 {
+		t.Fatalf("sgreen -h: exit code %d, want 0 (GNU screen style)\n%s", code, out)
 	}
 	if !strings.Contains(out, "Use:") && !strings.Contains(out, "Usage:") {
 		t.Fatalf("sgreen -h: expected usage output\n%s", out)
