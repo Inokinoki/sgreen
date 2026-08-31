@@ -1,4 +1,4 @@
-package unit
+package ui_test
 
 import (
 	"os"
@@ -8,8 +8,10 @@ import (
 )
 
 func TestDetectTerminalCapabilitiesDefault(t *testing.T) {
-	os.Unsetenv("TERM")
-	os.Unsetenv("COLORTERM")
+	// t.Setenv auto-restores after the test; a bare Unsetenv here used to
+	// mutate the process environment for every later test.
+	t.Setenv("TERM", "")
+	t.Setenv("COLORTERM", "")
 
 	caps := ui.DetectTerminalCapabilities()
 

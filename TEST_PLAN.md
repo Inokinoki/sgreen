@@ -13,73 +13,26 @@
 
 ## 2. 测试框架设计
 
-借鉴 screen C 项目的测试方法，为 sgreen 设计以下测试结构：
+测试直接放在被测包旁边（Go 惯例），行为测试通过真实二进制验证 CLI：
 
 ```
-tests/
-├── unit/                    # 单元测试（参考 screen 风格）
-│   ├── session_test.go     # 会话管理测试
-│   ├── window_test.go      # 窗口管理测试
-│   ├── pty_test.go         # PTY功能测试
-│   ├── ui_test.go          # UI组件测试
-│   ├── ui_ansi_test.go     # ANSI转义序列测试
-│   ├── ui_scrollback_test.go # 滚动缓冲测试
-│   ├── ui_copymode_test.go  # 复制模式测试
-│   ├── ui_terminal_caps_test.go # 终端能力测试
-│   ├── ui_monitoring_test.go  # 监控功能测试
-│   ├── ui_status_test.go      # 状态栏测试
-│   ├── config_test.go      # 配置解析测试
-│   └── encoding_test.go    # 字符编码测试
-│
-├── integration/            # 集成测试
-│   ├── session_lifecycle_test.go  # 会话生命周期
-│   ├── window_switching_test.go   # 窗口切换测试
-│   ├── attach_detach_test.go     # 附着/分离测试
-│   ├── command_test.go         # 命令执行测试
-│   └── cross_platform_test.go   # 跨平台兼容性测试
-│
-├── performance/            # 性能测试
-│   ├── session_bench_test.go    # 会话性能基准
-│   ├── window_bench_test.go     # 窗口性能基准
-│   ├── pty_bench_test.go        # PTY性能基准
-│   ├── memory_test.go           # 内存泄漏测试
-│   └── stress_test.go           # 压力测试
-│
-├── concurrency/            # 并发测试
-│   ├── session_race_test.go     # 会话竞态条件测试
-│   ├── attach_detach_race_test.go # 附着/分离并发测试
-│   ├── window_concurrent_test.go # 窗口并发操作测试
-│   └── signal_handling_test.go   # 信号处理并发测试
-│
-├── behavior/               # 行为测试（已有）
-│   └── cli_test.go        # CLI行为测试
-│
-├── fixtures/               # 测试数据和模拟数据
-│   ├── sample_sessions/    # 示例会话文件
-│   ├── mock_pty/          # 模拟PTY数据
-│   ├── test_configs/      # 测试配置文件
-│   ├── ansi_sequences/    # ANSI转义序列测试数据
-│   ├── terminal_caps/     # 终端能力测试数据
-│   └── encodings/         # 字符编码测试数据
-│
-├── mockhelpers/            # 模拟工具（类似 screen 的 mallocmock）
-│   ├── pty_mock.go        # PTY模拟器
-│   ├── session_mock.go    # 会话模拟器
-│   ├── ui_mock.go         # UI模拟器
-│   ├── syscall_mock.go    # 系统调用模拟器
-│   ├── fs_mock.go         # 文件系统模拟器
-│   └── time_mock.go       # 时间/定时器模拟器
-│
-├── platforms/              # 平台特定测试
-│   ├── unix_test.go       # Unix平台测试
-│   └── windows_test.go    # Windows平台测试
-│
-└── utils/                  # 测试工具函数
-    ├── assertions.go      # 自定义断言
-    ├── testhelpers.go     # 测试辅助函数
-    ├── fixtures.go         # 测试数据加载
-    └── coverage.go        # 覆盖率分析工具
+internal/session/*_test.go   # 会话/窗口管理（HOME 隔离，真实进程）
+internal/pty/*_test.go       # PTY 启动、DataConn 路由、daemon remote 端点
+internal/ui/*_test.go        # ANSI、滚动缓冲、状态栏、消息、终端能力、编码
+internal/config/*_test.go    # .screenrc 解析与查找
+internal/daemon/*_test.go    # （预留）daemon 协议
+cmd/sgreen/*_test.go         # CLI 决策逻辑（selectReattachSession 等）
+test/behavior/               # 行为测试：构建真实二进制 + GNU screen 双跑对比
+  cli_test.go                # 退出码/消息断言（与 GNU 4.09 实测对齐）
+  compare_with_gnu_screen.sh # 49 个用例双跑对比，差异即失败
 ```
+
+曾经存在的外部 `tests/` 目录（unit/mockhelpers/utils/fixtures）已移除：
+unit 测试迁入对应 internal 包（覆盖率统计从此计入），
+mockhelpers/utils/fixtures 从未被引用，属于死代码。
+计划的 integration/performance/concurrency/platforms 目录从未落地；
+需要时按 Go 惯例直接在目标包内加 `*_integration_test.go` / `*_bench_test.go`，
+不再维护独立目录骨架。
 
 ## 3. 测试计划详情
 
@@ -403,454 +356,26 @@ func TestConfigOverride(t *testing.T) {
 
 **已存在的测试需要整合到新框架中**：
 
-- [cmd/sgreen/main_test.go](file:///Users/inoki/Builds/sgreen/cmd/sgreen/main_test.go) - CLI 会话选择和参数解析测试
-- [internal/session/window_test.go](file:///Users/inoki/Builds/sgreen/internal/session/window_test.go) - 窗口编号转换和编码检测测试
-- [internal/ui/encoding_test.go](file:///Users/inoki/Builds/sgreen/internal/ui/encoding_test.go) - 字符编码转换测试
+- [cmd/sgreen/main_test.go](cmd/sgreen/main_test.go) - CLI 会话选择和参数解析测试
+- [internal/session/window_test.go](internal/session/window_test.go) - 窗口编号转换和编码检测测试
+- [internal/ui/encoding_test.go](internal/ui/encoding_test.go) - 字符编码转换测试
 
 这些测试应该保持不变，但需要在新的测试文档中明确记录其覆盖范围和作用。
 
-### 3.6 完善的 Mock 策略
+### 3.6 Mock 策略（实际采用）
 
-**mockhelpers/pty_mock.go** - PTY 模拟器
-```go
-package mockhelpers
+原计划编写 mockhelpers 包（PTY/会话/UI/syscall/fs/time 模拟器），该包从未被
+任何测试引用，已删除。实际采用的隔离手段：
 
-import (
-    "bytes"
-    "errors"
-    "io"
-    "os/exec"
-    "sync"
-)
-
-type MockPTY struct {
-    PtsPath      string
-    Cmd          *exec.Cmd
-    OutputBuffer bytes.Buffer
-    InputBuffer  bytes.Buffer
-    ShouldFail   bool
-    FailOnWrite  bool
-    Closed       bool
-    mu           sync.Mutex
-}
-
-func (m *MockPTY) Start() error {
-    m.mu.Lock()
-    defer m.mu.Unlock()
-    
-    if m.ShouldFail {
-        return errors.New("pty mock start failure")
-    }
-    m.PtsPath = "/dev/pts/mock"
-    return nil
-}
-
-func (m *MockPTY) Write(data []byte) (int, error) {
-    m.mu.Lock()
-    defer m.mu.Unlock()
-    
-    if m.Closed {
-        return 0, io.EOF
-    }
-    if m.FailOnWrite {
-        return 0, errors.New("pty mock write failure")
-    }
-    return m.InputBuffer.Write(data)
-}
-
-func (m *MockPTY) Read(p []byte) (int, error) {
-    m.mu.Lock()
-    defer m.mu.Unlock()
-    
-    if m.Closed {
-        return 0, io.EOF
-    }
-    return m.OutputBuffer.Read(p)
-}
-
-func (m *MockPTY) Close() error {
-    m.mu.Lock()
-    defer m.mu.Unlock()
-    m.Closed = true
-    return nil
-}
-
-func (m *MockPTY) SetShouldFail(fail bool) {
-    m.mu.Lock()
-    defer m.mu.Unlock()
-    m.ShouldFail = fail
-}
-```
-
-**mockhelpers/session_mock.go** - 会话模拟器
-```go
-package mockhelpers
-
-import (
-    "sync"
-    "time"
-)
-
-type MockSession struct {
-    ID          string
-    Pid         int
-    IsRunning   bool
-    IsAttached  bool
-    SaveCount   int
-    KillCalled  bool
-    AttachCount int
-    DetachCount int
-    mu          sync.Mutex
-}
-
-func NewMockSession(id string, pid int) *MockSession {
-    return &MockSession{
-        ID:         id,
-        Pid:        pid,
-        IsRunning:  true,
-        IsAttached: false,
-    }
-}
-
-func (m *MockSession) Start() error {
-    m.mu.Lock()
-    defer m.mu.Unlock()
-    m.IsRunning = true
-    return nil
-}
-
-func (m *MockSession) Kill() {
-    m.mu.Lock()
-    defer m.mu.Unlock()
-    m.IsRunning = false
-    m.KillCalled = true
-}
-
-func (m *MockSession) Attach() error {
-    m.mu.Lock()
-    defer m.mu.Unlock()
-    if !m.IsRunning {
-        return errors.New("session not running")
-    }
-    m.IsAttached = true
-    m.AttachCount++
-    return nil
-}
-
-func (m *MockSession) Detach() {
-    m.mu.Lock()
-    defer m.mu.Unlock()
-    m.IsAttached = false
-    m.DetachCount++
-}
-
-func (m *MockSession) Save() error {
-    m.mu.Lock()
-    defer m.mu.Unlock()
-    m.SaveCount++
-    return nil
-}
-
-func (m *MockSession) NewWindow(cmd string, args []string) (*MockWindow, error) {
-    return &MockWindow{
-        ID:   time.Now().UnixNano(),
-        Cmd:  cmd,
-        Args: args,
-    }, nil
-}
-```
-
-**mockhelpers/ui_mock.go** - UI 模拟器
-```go
-package mockhelpers
-
-import (
-    "sync"
-)
-
-type MockUI struct {
-    InCopyMode      bool
-    StatusMessage   string
-    CurrentWindow   string
-    ActivityLog     []ActivityEntry
-    RenderCalls     int
-    RenderOutput    string
-    mu              sync.Mutex
-}
-
-type ActivityEntry struct {
-    Window  string
-    Time    time.Time
-    Type    string
-}
-
-func NewMockUI() *MockUI {
-    return &MockUI{
-        ActivityLog: make([]ActivityEntry, 0),
-    }
-}
-
-func (m *MockUI) EnterCopyMode() {
-    m.mu.Lock()
-    defer m.mu.Unlock()
-    m.InCopyMode = true
-}
-
-func (m *MockUI) ExitCopyMode() {
-    m.mu.Lock()
-    defer m.mu.Unlock()
-    m.InCopyMode = false
-}
-
-func (m *MockUI) SetStatusMessage(msg string) {
-    m.mu.Lock()
-    defer m.mu.Unlock()
-    m.StatusMessage = msg
-}
-
-func (m *MockUI) Render(output string) {
-    m.mu.Lock()
-    defer m.mu.Unlock()
-    m.RenderCalls++
-    m.RenderOutput = output
-}
-
-func (m *MockUI) RecordActivity(window string, activityType string) {
-    m.mu.Lock()
-    defer m.mu.Unlock()
-    m.ActivityLog = append(m.ActivityLog, ActivityEntry{
-        Window: window,
-        Time:   time.Now(),
-        Type:   activityType,
-    })
-}
-```
-
-**mockhelpers/syscall_mock.go** - 系统调用模拟器
-```go
-package mockhelpers
-
-import (
-    "os"
-    "syscall"
-)
-
-type MockSyscall struct {
-    KillCalls       []KillCall
-    KillShouldFail  bool
-    SetenvCalls     []SetenvCall
-    GetenvResponses map[string]string
-    mu              sync.Mutex
-}
-
-type KillCall struct {
-    Pid int
-    Sig syscall.Signal
-}
-
-type SetenvCall struct {
-    Key   string
-    Value string
-}
-
-func NewMockSyscall() *MockSyscall {
-    return &MockSyscall{
-        KillCalls:       make([]KillCall, 0),
-        SetenvCalls:     make([]SetenvCall, 0),
-        GetenvResponses: make(map[string]string),
-    }
-}
-
-func (m *MockSyscall) Kill(pid int, sig syscall.Signal) error {
-    m.mu.Lock()
-    defer m.mu.Unlock()
-    
-    m.KillCalls = append(m.KillCalls, KillCall{Pid: pid, Sig: sig})
-    
-    if m.KillShouldFail {
-        return os.NewSyscallError("kill", errors.New("mock kill failed"))
-    }
-    return nil
-}
-
-func (m *MockSyscall) Setenv(key, value string) error {
-    m.mu.Lock()
-    defer m.mu.Unlock()
-    
-    m.SetenvCalls = append(m.SetenvCalls, SetenvCall{Key: key, Value: value})
-    return nil
-}
-
-func (m *MockSyscall) Getenv(key string) string {
-    m.mu.Lock()
-    defer m.mu.Unlock()
-    
-    if val, ok := m.GetenvResponses[key]; ok {
-        return val
-    }
-    return ""
-}
-
-func (m *MockSyscall) SetGetenvResponse(key, value string) {
-    m.mu.Lock()
-    defer m.mu.Unlock()
-    m.GetenvResponses[key] = value
-}
-```
-
-**mockhelpers/fs_mock.go** - 文件系统模拟器
-```go
-package mockhelpers
-
-import (
-    "os"
-    "sync"
-)
-
-type MockFS struct {
-    Files      map[string][]byte
-    Dirs       map[string]bool
-    MkdirCalls []string
-    WriteCalls []WriteCall
-    ReadCalls  []ReadCall
-    mu         sync.Mutex
-}
-
-type WriteCall struct {
-    Path string
-    Data []byte
-}
-
-type ReadCall struct {
-    Path string
-}
-
-func NewMockFS() *MockFS {
-    return &MockFS{
-        Files:  make(map[string][]byte),
-        Dirs:   make(map[string]bool),
-    }
-}
-
-func (m *MockFS) MkdirAll(path string) error {
-    m.mu.Lock()
-    defer m.mu.Unlock()
-    
-    m.MkdirCalls = append(m.MkdirCalls, path)
-    m.Dirs[path] = true
-    return nil
-}
-
-func (m *MockFS) WriteFile(path string, data []byte) error {
-    m.mu.Lock()
-    defer m.mu.Unlock()
-    
-    m.WriteCalls = append(m.WriteCalls, WriteCall{Path: path, Data: data})
-    m.Files[path] = data
-    return nil
-}
-
-func (m *MockFS) ReadFile(path string) ([]byte, error) {
-    m.mu.Lock()
-    defer m.mu.Unlock()
-    
-    m.ReadCalls = append(m.ReadCalls, ReadCall{Path: path})
-    
-    if data, ok := m.Files[path]; ok {
-        return data, nil
-    }
-    return nil, os.ErrNotExist
-}
-
-func (m *MockFS) Exists(path string) bool {
-    m.mu.Lock()
-    defer m.mu.Unlock()
-    
-    _, exists := m.Files[path]
-    return exists
-}
-
-func (m *MockFS) SetFileContent(path string, content []byte) {
-    m.mu.Lock()
-    defer m.mu.Unlock()
-    m.Files[path] = content
-}
-```
-
-**mockhelpers/time_mock.go** - 时间/定时器模拟器
-```go
-package mockhelpers
-
-import (
-    "sync"
-    "time"
-)
-
-type MockTime struct {
-    CurrentTime  time.Time
-    SleepCalls   []time.Duration
-    AfterCalls   []time.Duration
-    TimeSince    time.Time
-    Frozen       bool
-    mu           sync.Mutex
-}
-
-func NewMockTime() *MockTime {
-    return &MockTime{
-        CurrentTime: time.Now(),
-        TimeSince:   time.Now(),
-        SleepCalls:  make([]time.Duration, 0),
-        AfterCalls:  make([]time.Duration, 0),
-    }
-}
-
-func (m *MockTime) Now() time.Time {
-    m.mu.Lock()
-    defer m.mu.Unlock()
-    return m.CurrentTime
-}
-
-func (m *MockTime) Sleep(d time.Duration) {
-    m.mu.Lock()
-    defer m.mu.Unlock()
-    
-    m.SleepCalls = append(m.SleepCalls, d)
-    if !m.Frozen {
-        m.CurrentTime = m.CurrentTime.Add(d)
-    }
-}
-
-func (m *MockTime) After(d time.Duration) <-chan time.Time {
-    m.mu.Lock()
-    defer m.mu.Unlock()
-    
-    m.AfterCalls = append(m.AfterCalls, d)
-    
-    ch := make(chan time.Time, 1)
-    if !m.Frozen {
-        ch <- m.CurrentTime.Add(d)
-    }
-    return ch
-}
-
-func (m *MockTime) SetTime(t time.Time) {
-    m.mu.Lock()
-    defer m.mu.Unlock()
-    m.CurrentTime = t
-}
-
-func (m *MockTime) Freeze() {
-    m.mu.Lock()
-    defer m.mu.Unlock()
-    m.Frozen = true
-}
-
-func (m *MockTime) Unfreeze() {
-    m.mu.Lock()
-    defer m.mu.Unlock()
-    m.Frozen = false
-}
-```
+- **依赖注入**：`pty.RemoteControl`（Resize/Alive/Quit 函数字段）让 daemon
+  控制路径可以在没有真实 daemon 的情况下测试（见 internal/pty/remote_test.go）。
+- **进程注入**：cmd/sgreen 的 `selectReattachSession` 等决策函数接受
+  `loadByName`/`isAttached` 函数参数，测试直接传入 stub。
+- **内存管道**：`net.Pipe()` 充当 daemon socket 的替身。
+- **HOME 隔离**：internal/session 的 TestMain 将 HOME 指向临时目录，
+  会话目录惰性初始化（`dir()`），测试不触碰真实 ~/.sgreen。
+- **真实 PTY**：pty/session 的行为测试直接启动短命令（/bin/sleep、/bin/echo），
+  比模拟 PTY 更接近真实故障模式。
 
 ### 3.7 平台特定测试
 
@@ -993,46 +518,44 @@ func assertSessionWindowCount(t *testing.T, session *session.Session, expected i
 5. **行为测试**：最慢，与GNU screen对比验证
 
 ### 4.2 测试命令
-```bash
-# 运行所有测试
-make test
 
-# 运行单元测试
+```bash
+# 运行所有测试（= make test）
+go test -v ./...
+
+# 单元测试（按包）
 go test ./internal/session/...
 go test ./internal/pty/...
 go test ./internal/ui/...
+go test ./internal/config/...
+go test ./cmd/sgreen/...
 
-# 运行集成测试
-go test ./tests/integration/...
+# 行为测试（构建真实二进制）
+go test -v ./test/behavior/...
 
-# 运行性能测试
-go test -bench=. -benchmem ./tests/performance/...
-
-# 运行并发测试
-go test -race ./tests/concurrency/...
-
-# 运行行为测试
+# GNU screen 双跑对比（差异即失败）
 ./test/behavior/compare_with_gnu_screen.sh
 
-# 运行覆盖率测试
-go test -cover ./...
-
-# 生成覆盖率报告
-go test -coverprofile=coverage.out ./...
+# 覆盖率（-coverpkg 让外部测试包的贡献计入统计）
+go test -covermode=atomic -coverprofile=coverage.out -coverpkg=./... ./...
+go tool cover -func=coverage.out
 go tool cover -html=coverage.out -o coverage.html
 
-# 运行内存泄漏检测
-go test -memprofile=mem.prof ./tests/performance/...
-go tool pprof mem.prof
-
-# 运行竞态条件检测
+# 竞态检测
 go test -race ./...
 ```
+
 
 ### 4.3 测试覆盖率目标
 
 #### 4.3.1 覆盖率指标
-- **总体覆盖率**：≥ 70%
+
+> 现状（2026-08，合并口径 `-coverpkg=./...`）：总覆盖率约 18%，CI 门槛 15%。
+> 目标分阶段推进：15%（现状）→ 40% → 70%（终态），每次上调前先补齐对应
+> 模块测试，避免门槛长期红灯失效。零覆盖重灾区：internal/ui/attach.go、
+> copymode.go、monitoring.go、cmd/sgreen/main.go 的 handler 函数。
+
+- **总体覆盖率（终态目标）**：≥ 70%
 - **核心模块覆盖率**：
   - `internal/session/`：≥ 85%
   - `internal/pty/`：≥ 80%
@@ -1067,146 +590,17 @@ fi
 
 ### 4.5 CI/CD 配置
 
-#### 4.5.1 GitHub Actions 工作流
+真实配置见仓库（本文不再内嵌 YAML 副本，避免与实际漂移）：
 
-```yaml
-name: Test
+- [.github/workflows/test.yml](.github/workflows/test.yml)
+  - `test` job：三平台矩阵，`go test -race -coverpkg=./... ./...`
+    一次跑完测试+竞态+覆盖率，门槛 15%（当前 ~18%，目标分阶段提到 40%+）；
+    Windows 跳过 -race（runner 工具链不稳）。
+  - `weekly-full-test` job：每周一 schedule 触发，race 全量 + 安装
+    GNU screen 跑双跑对比，报告有差异即失败。
+- [.github/workflows/ci.yml](.github/workflows/ci.yml)
+  - fmt（gofmt -l 只读检查）/ lint / 9 目标交叉编译构建 / gnu-screen-parity。
 
-on:
-  push:
-    branches: [ main, develop ]
-  pull_request:
-    branches: [ main, develop ]
-
-jobs:
-  test:
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-        go-version: ['1.21', '1.22']
-    
-    steps:
-    - uses: actions/checkout@v3
-    
-    - name: Set up Go
-      uses: actions/setup-go@v4
-      with:
-        go-version: ${{ matrix.go-version }}
-    
-    - name: Cache Go modules
-      uses: actions/cache@v3
-      with:
-        path: ~/go/pkg/mod
-        key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
-        restore-keys: |
-          ${{ runner.os }}-go-
-    
-    - name: Install dependencies
-      run: go mod download
-    
-    - name: Run unit tests
-      run: go test -v -race ./internal/...
-    
-    - name: Run integration tests
-      run: go test -v ./tests/integration/...
-    
-    - name: Run performance tests
-      run: go test -bench=. -benchmem ./tests/performance/...
-    
-    - name: Generate coverage report
-      run: |
-        go test -coverprofile=coverage.out ./...
-        go tool cover -func=coverage.out
-    
-    - name: Upload coverage to Codecov
-      uses: codecov/codecov-action@v3
-      with:
-        file: ./coverage.out
-    
-    - name: Check coverage threshold
-      run: |
-        COVERAGE=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | sed 's/%//')
-        echo "Total coverage: $COVERAGE%"
-        if (( $(echo "$COVERAGE < 70" | bc -l) )); then
-          echo "Coverage below 70% threshold"
-          exit 1
-        fi
-```
-
-#### 4.5.2 性能回归检测
-
-```yaml
-name: Performance Regression
-
-on:
-  push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
-
-jobs:
-  benchmark:
-    runs-on: ubuntu-latest
-    
-    steps:
-    - uses: actions/checkout@v3
-    
-    - name: Set up Go
-      uses: actions/setup-go@v4
-      with:
-        go-version: '1.22'
-    
-    - name: Run benchmarks
-      run: |
-        go test -bench=. -benchmem ./tests/performance/... | tee benchmark.txt
-    
-    - name: Compare with baseline
-      run: |
-        # 下载基准数据（这里需要配置存储）
-        # go install github.com/bobheadxi/gobenchdata/cmd/gobenchdata@latest
-        # gobenchdata compare --new benchmark.txt --old baseline.json
-    
-    - name: Upload benchmark results
-      uses: actions/upload-artifact@v3
-      with:
-        name: benchmark-results
-        path: benchmark.txt
-```
-
-#### 4.5.3 每周完整测试
-
-```yaml
-name: Weekly Full Test
-
-on:
-  schedule:
-    - cron: '0 2 * * 0'  # 每周日凌晨2点
-
-jobs:
-  full-test:
-    runs-on: ubuntu-latest
-    
-    steps:
-    - uses: actions/checkout@v3
-    
-    - name: Set up Go
-      uses: actions/setup-go@v4
-      with:
-        go-version: '1.22'
-    
-    - name: Run all tests with race detection
-      run: go test -race -count=1 ./...
-    
-    - name: Run memory leak tests
-      run: go test -memprofile=mem.prof ./tests/performance/...
-    
-    - name: Run stress tests
-      run: go test -v -tags=stress ./tests/performance/...
-    
-    - name: Run GNU Screen comparison
-      run: ./test/behavior/compare_with_gnu_screen.sh
-```
 
 ### 4.6 测试报告
 
@@ -1217,14 +611,15 @@ jobs:
 go test -coverprofile=coverage.out ./...
 go tool cover -html=coverage.out -o coverage.html
 
-# 生成性能基准报告
-go test -bench=. -benchmem ./tests/performance/... | tee benchmark.txt
+# 生成覆盖率报告（含外部测试包贡献）
+go test -covermode=atomic -coverprofile=coverage.out -coverpkg=./... ./...
+go tool cover -html=coverage.out -o coverage.html
 
 # 生成竞态条件检测报告
 go test -race ./... 2> race_report.txt
 
-# 生成内存分析报告
-go test -memprofile=mem.prof ./tests/performance/...
+# 生成内存分析报告（基准落地后按包运行）
+go test -memprofile=mem.prof ./internal/session/...
 go tool pprof -text mem.prof > memory_report.txt
 ```
 
@@ -1266,309 +661,15 @@ benchstat old_benchmark.txt new_benchmark.txt
 - 内存使用和泄漏检测
 - 并发操作的性能表现
 
-### 5.4 性能和并发测试章节
+### 5.4 性能和并发测试（待落地）
 
-#### 5.4.1 性能测试（performance/）
+性能与并发测试尚未编写。落地时的形态（遵循 Go 惯例，不建独立目录）：
 
-**session_bench_test.go** - 会话性能基准
-```go
-func BenchmarkSessionCreation(b *testing.B) {
-    for i := 0; i < b.N; i++ {
-        s := session.NewSession(fmt.Sprintf("bench%d", i), "/bin/bash", []string{})
-        s.Kill()
-    }
-}
+- 基准：在目标包内添加 `BenchmarkXxx`（如 internal/session 的
+  Save/Load 往返、internal/ui 的滚动缓冲写入），`go test -bench` 运行。
+- 竞态：`go test -race ./...`（CI 常开，Windows 除外）。
+- 压测/内存：`go test -tags=stress`、`-memprofile` 配合 pprof。
 
-func BenchmarkSessionSaveLoad(b *testing.B) {
-    tempDir := b.TempDir()
-    s := session.NewSession("bench", "/bin/bash", []string{})
-    s.SaveDir = tempDir
-    
-    b.ResetTimer()
-    for i := 0; i < b.N; i++ {
-        s.Save()
-        session.LoadSession("bench", tempDir)
-    }
-}
-
-func BenchmarkMultipleSessions(b *testing.B) {
-    sessions := make([]*session.Session, 100)
-    for i := range sessions {
-        sessions[i] = session.NewSession(fmt.Sprintf("bench%d", i), "/bin/bash", []string{})
-    }
-    
-    b.ResetTimer()
-    for i := 0; i < b.N; i++ {
-        for _, s := range sessions {
-            s.Save()
-        }
-    }
-}
-```
-
-**window_bench_test.go** - 窗口性能基准
-```go
-func BenchmarkWindowSwitch(b *testing.B) {
-    s := session.NewSession("bench", "/bin/bash", []string{})
-    for i := 0; i < 10; i++ {
-        s.NewWindow("/bin/sh", []string{})
-    }
-    
-    b.ResetTimer()
-    for i := 0; i < b.N; i++ {
-        s.SwitchWindow(i % 10)
-    }
-}
-
-func BenchmarkWindowCreation(b *testing.B) {
-    s := session.NewSession("bench", "/bin/bash", []string{})
-    
-    b.ResetTimer()
-    for i := 0; i < b.N; i++ {
-        win, _ := s.NewWindow("/bin/sh", []string{})
-        win.Close()
-    }
-}
-```
-
-**pty_bench_test.go** - PTY 性能基准
-```go
-func BenchmarkPTYStart(b *testing.B) {
-    for i := 0; i < b.N; i++ {
-        ptyProc, _ := pty.StartCmd(exec.Command("/bin/echo", "test"))
-        ptyProc.Close()
-    }
-}
-
-func BenchmarkPTYWrite(b *testing.B) {
-    ptyProc, _ := pty.StartCmd(exec.Command("/bin/cat"))
-    defer ptyProc.Close()
-    
-    data := make([]byte, 1024)
-    b.ResetTimer()
-    for i := 0; i < b.N; i++ {
-        ptyProc.Write(data)
-    }
-}
-```
-
-**memory_test.go** - 内存泄漏测试
-```go
-func TestMemoryLeakSessionCreation(t *testing.T) {
-    if testing.Short() {
-        t.Skip("Skipping memory leak test in short mode")
-    }
-    
-    var m1, m2 runtime.MemStats
-    runtime.GC()
-    runtime.ReadMemStats(&m1)
-    
-    // 创建大量会话
-    for i := 0; i < 1000; i++ {
-        s := session.NewSession(fmt.Sprintf("memtest%d", i), "/bin/bash", []string{})
-        s.Kill()
-    }
-    
-    runtime.GC()
-    runtime.ReadMemStats(&m2)
-    
-    // 检查内存增长是否合理
-    allocDiff := m2.Alloc - m1.Alloc
-    if allocDiff > 100*1024*1024 { // 100MB
-        t.Errorf("Potential memory leak: %d bytes allocated", allocDiff)
-    }
-}
-```
-
-**stress_test.go** - 压力测试
-```go
-func TestStressMultipleWindows(t *testing.T) {
-    if testing.Short() {
-        t.Skip("Skipping stress test in short mode")
-    }
-    
-    s := session.NewSession("stress", "/bin/bash", []string{})
-    defer s.Kill()
-    
-    // 创建大量窗口
-    for i := 0; i < 100; i++ {
-        win, err := s.NewWindow("/bin/sh", []string{})
-        if err != nil {
-            t.Fatalf("Failed to create window %d: %v", i, err)
-        }
-        if i % 10 == 9 {
-            win.Close()
-        }
-    }
-    
-    // 验证系统仍然稳定
-    assert.Len(t, s.Windows, 91)
-}
-
-func TestStressRapidAttachDetach(t *testing.T) {
-    if testing.Short() {
-        t.Skip("Skipping stress test in short mode")
-    }
-    
-    s := session.NewSession("stress", "/bin/bash", []string{})
-    defer s.Kill()
-    
-    // 快速附着/分离
-    for i := 0; i < 100; i++ {
-        err := s.Attach()
-        if err != nil {
-            t.Fatalf("Attach failed on iteration %d: %v", i, err)
-        }
-        s.Detach()
-    }
-}
-```
-
-#### 5.4.2 并发测试（concurrency/）
-
-**session_race_test.go** - 会话竞态条件测试
-```go
-func TestConcurrentSessionCreation(t *testing.T) {
-    var wg sync.WaitGroup
-    sessions := make(chan *session.Session, 10)
-    
-    for i := 0; i < 10; i++ {
-        wg.Add(1)
-        go func(id int) {
-            defer wg.Done()
-            s := session.NewSession(fmt.Sprintf("race%d", id), "/bin/bash", []string{})
-            sessions <- s
-        }(i)
-    }
-    
-    wg.Wait()
-    close(sessions)
-    
-    count := 0
-    range sessions {
-        count++
-    }
-    assert.Equal(t, 10, count)
-}
-
-func TestConcurrentWindowOperations(t *testing.T) {
-    s := session.NewSession("concurrent", "/bin/bash", []string{})
-    defer s.Kill()
-    
-    var wg sync.WaitGroup
-    for i := 0; i < 100; i++ {
-        wg.Add(1)
-        go func(id int) {
-            defer wg.Done()
-            if id % 2 == 0 {
-                s.NewWindow("/bin/sh", []string{})
-            } else {
-                s.SwitchWindow(id % 5)
-            }
-        }(i)
-    }
-    
-    wg.Wait()
-}
-```
-
-**attach_detach_race_test.go** - 附着/分离并发测试
-```go
-func TestConcurrentAttachDetach(t *testing.T) {
-    s := session.NewSession("race", "/bin/bash", []string{})
-    defer s.Kill()
-    
-    var wg sync.WaitGroup
-    stopChan := make(chan struct{})
-    
-    // 多个 goroutine 同时附着/分离
-    for i := 0; i < 5; i++ {
-        wg.Add(2)
-        go func() {
-            defer wg.Done()
-            for {
-                select {
-                case <-stopChan:
-                    return
-                default:
-                    s.Attach()
-                }
-            }
-        }()
-        go func() {
-            defer wg.Done()
-            for {
-                select {
-                case <-stopChan:
-                    return
-                default:
-                    s.Detach()
-                }
-            }
-        }()
-    }
-    
-    // 运行一段时间后停止
-    time.Sleep(100 * time.Millisecond)
-    close(stopChan)
-    wg.Wait()
-}
-```
-
-**window_concurrent_test.go** - 窗口并发操作测试
-```go
-func TestConcurrentWindowAccess(t *testing.T) {
-    s := session.NewSession("concurrent", "/bin/bash", []string{})
-    defer s.Kill()
-    
-    // 创建多个窗口
-    for i := 0; i < 10; i++ {
-        s.NewWindow("/bin/sh", []string{})
-    }
-    
-    var wg sync.WaitGroup
-    errors := make(chan error, 100)
-    
-    // 并发访问窗口
-    for i := 0; i < 100; i++ {
-        wg.Add(1)
-        go func(id int) {
-            defer wg.Done()
-            if err := s.SwitchWindow(id % 10); err != nil {
-                errors <- err
-            }
-        }(i)
-    }
-    
-    wg.Wait()
-    close(errors)
-    
-    for err := range errors {
-        t.Errorf("Concurrent window access error: %v", err)
-    }
-}
-```
-
-**signal_handling_test.go** - 信号处理并发测试
-```go
-func TestConcurrentSignalDelivery(t *testing.T) {
-    s := session.NewSession("signals", "/bin/bash", []string{})
-    defer s.Kill()
-    
-    var wg sync.WaitGroup
-    
-    // 并发发送信号
-    for i := 0; i < 10; i++ {
-        wg.Add(1)
-        go func() {
-            defer wg.Done()
-            s.SendSignal(syscall.SIGUSR1)
-        }()
-    }
-    
-    wg.Wait()
-}
-```
 
 ## 6. 实施步骤
 
@@ -1592,143 +693,11 @@ func TestConcurrentSignalDelivery(t *testing.T) {
 - 优化测试性能
 - 添加新功能测试
 
-## 7. 测试目录创建脚本
+## 7.（已移除）测试目录创建脚本
 
-```bash
-#!/bin/bash
-# 创建测试目录结构的脚本
+原此节包含一段 mkdir + cat 的 shell 脚本，用于生成 tests/ 目录骨架和示例
+测试。该骨架与实际结构不符（测试已位于各 internal 包内），脚本删除。
 
-# 创建主要测试目录
-mkdir -p tests/unit tests/integration tests/fixtures tests/mockhelpers tests/utils
-
-# 创建单元测试文件
-cat > tests/unit/session_test.go << 'EOF'
-package unit
-
-import (
-    "testing"
-    "github.com/inoki/sgreen/internal/session"
-    "github.com/stretchr/testify/assert"
-)
-
-func TestSessionCreate(t *testing.T) {
-    s := session.NewSession("test", "/bin/bash", []string{})
-    assert.NotNil(t, s)
-    assert.Equal(t, "test", s.ID)
-}
-EOF
-
-cat > tests/unit/pty_test.go << 'EOF'
-package unit
-
-import (
-    "testing"
-    "os/exec"
-    "github.com/stretchr/testify/assert"
-)
-
-func TestPTYCreation(t *testing.T) {
-    // Test PTY process creation
-    cmd := exec.Command("/bin/echo", "test")
-    assert.NotNil(t, cmd)
-}
-EOF
-
-# 创建集成测试文件
-cat > tests/integration/session_lifecycle_test.go << 'EOF'
-package integration
-
-import (
-    "testing"
-    "os"
-    "path/filepath"
-    "github.com/inoki/sgreen/internal/session"
-    "github.com/stretchr/testify/assert"
-)
-
-func TestSessionFullLifecycle(t *testing.T) {
-    // Create temporary directory
-    tempDir := t.TempDir()
-
-    // Create session
-    s := session.NewSession("integration_test", "/bin/bash", []string{})
-    s.SaveDir = tempDir
-
-    // Save session
-    err := s.Save()
-    assert.NoError(t, err)
-
-    // Load session from disk
-    loadedS, err := session.LoadSession("integration_test", tempDir)
-    assert.NoError(t, err)
-    assert.Equal(t, s.ID, loadedS.ID)
-
-    // Cleanup
-    loadedS.Kill()
-    os.RemoveAll(tempDir)
-}
-EOF
-
-# 创建模拟工具
-cat > tests/mockhelpers/pty_mock.go << 'EOF'
-package mockhelpers
-
-import (
-    "bytes"
-    "errors"
-    "os/exec"
-)
-
-type MockPTY struct {
-    PtsPath      string
-    Cmd          *exec.Cmd
-    OutputBuffer bytes.Buffer
-    ShouldFail   bool
-}
-
-func (m *MockPTY) Start() error {
-    if m.ShouldFail {
-        return errors.New("pty mock failure")
-    }
-    return nil
-}
-
-func (m *MockPTY) Write(data []byte) (int, error) {
-    if m.ShouldFail {
-        return 0, errors.New("write mock failure")
-    }
-    return m.OutputBuffer.Write(data)
-}
-EOF
-
-# 创建断言工具
-cat > tests/utils/assertions.go << 'EOF'
-package utils
-
-import (
-    "testing"
-    "github.com/inoki/sgreen/internal/pty"
-    "github.com/inoki/sgreen/internal/session"
-    "github.com/stretchr/testify/assert"
-)
-
-func assertPTYRunning(t *testing.T, ptyProc *pty.PTYProcess) {
-    t.Helper()
-    if ptyProc == nil || ptyProc.Cmd == nil || ptyProc.Cmd.Process == nil {
-        t.Errorf("Expected PTY process to be running")
-    }
-}
-
-func assertSessionWindowCount(t *testing.T, session *session.Session, expected int) {
-    t.Helper()
-    if len(session.Windows) != expected {
-        t.Errorf("Expected %d windows, got %d", expected, len(session.Windows))
-    }
-}
-EOF
-
-echo "Test directory structure created successfully!"
-```
 
 ## 8. 测试依赖管理
 
@@ -2008,59 +977,17 @@ func TestConcurrentSessionAccess(t *testing.T) {
 
 ### 9.8 测试工具和命令
 
-#### 9.8.1 常用测试命令
 ```bash
-# 运行所有测试
-make test
-
-# 运行特定包的测试
-go test ./internal/session/
-
-# 运行特定测试函数
-go test -run TestSessionCreate ./internal/session/
-
-# 详细输出
-go test -v ./...
-
-# 并行运行
-go test -parallel 4 ./...
-
-# 跳过慢测试
-go test -short ./...
+make test                  # go test -v ./...
+make build                 # 构建 build/sgreen
+make test-behavior         # 仅行为测试
+gofmt -l .                 # 格式检查（CI 强制）
+go vet ./...               # 静态检查
+go test -race ./...        # 竞态
+go test -covermode=atomic -coverpkg=./... -coverprofile=c.out ./...
+go tool cover -func=c.out  # 覆盖率摘要
 ```
 
-#### 9.8.2 覆盖率分析
-```bash
-# 生成覆盖率报告
-go test -coverprofile=coverage.out ./...
-
-# 查看覆盖率
-go tool cover -func=coverage.out
-
-# 生成HTML报告
-go tool cover -html=coverage.out -o coverage.html
-
-# 查看特定包的覆盖率
-go test -coverprofile=coverage.out ./internal/session/
-go tool cover -func=coverage.out | grep session
-```
-
-#### 9.8.3 性能分析
-```bash
-# 运行基准测试
-go test -bench=. -benchmem ./tests/performance/
-
-# 比较基准测试结果
-benchstat old.txt new.txt
-
-# CPU 性能分析
-go test -cpuprofile=cpu.prof ./tests/performance/
-go tool pprof cpu.prof
-
-# 内存性能分析
-go test -memprofile=mem.prof ./tests/performance/
-go tool pprof mem.prof
-```
 
 ## 10. 注意事项
 

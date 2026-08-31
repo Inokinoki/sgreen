@@ -52,20 +52,28 @@ type Session struct {
 }
 
 var (
-	sessionsDir string
-	sessions    = make(map[string]*Session)
-	sessionsMu  sync.RWMutex
+	sessions     = make(map[string]*Session)
+	sessionsMu   sync.RWMutex
+	sessionsDir  string
+	sessionsOnce sync.Once
 )
 
-func init() {
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		homeDir = os.TempDir()
-	}
-	sessionsDir = filepath.Join(homeDir, ".sgreen", "sessions")
-	if err := os.MkdirAll(sessionsDir, 0755); err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "warning: failed to create sessions directory: %v\n", err)
-	}
+// dir returns the on-disk sessions directory, creating it on first use.
+// Initialization is lazy so tests can point HOME at a scratch directory
+// before touching any session API (the old package-level init() captured
+// HOME at process start, which made test isolation impossible).
+func dir() string {
+	sessionsOnce.Do(func() {
+		homeDir, err := os.UserHomeDir()
+		if err != nil {
+			homeDir = os.TempDir()
+		}
+		sessionsDir = filepath.Join(homeDir, ".sgreen", "sessions")
+		if err := os.MkdirAll(sessionsDir, 0755); err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "warning: failed to create sessions directory: %v\n", err)
+		}
+	})
+	return sessionsDir
 }
 
 // CurrentUser returns the current username for permission checks.
@@ -354,7 +362,7 @@ func List() []*Session {
 
 // loadAllFromDisk loads all session files from disk
 func loadAllFromDisk() ([]*Session, error) {
-	entries, err := os.ReadDir(sessionsDir)
+	entries, err := os.ReadDir(dir())
 	if err != nil {
 		return nil, err
 	}
@@ -382,9 +390,9 @@ func (s *Session) save() error {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	filePath := filepath.Join(sessionsDir, s.ID+".json")
+	filePath := filepath.Join(dir(), s.ID+".json")
 	// Ensure sessions directory exists
-	if err := os.MkdirAll(sessionsDir, 0755); err != nil {
+	if err := os.MkdirAll(dir(), 0755); err != nil {
 		if isResourceExhausted(err) {
 			return fmt.Errorf("resource exhaustion while creating sessions directory: %w", err)
 		}
@@ -419,7 +427,7 @@ func (s *Session) save() error {
 
 // loadFromDisk loads a session from disk
 func loadFromDisk(id string) (*Session, error) {
-	filePath := filepath.Join(sessionsDir, id+".json")
+	filePath := filepath.Join(dir(), id+".json")
 	data, err := os.ReadFile(filePath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -453,12 +461,12 @@ func loadFromDisk(id string) (*Session, error) {
 
 // SocketPath returns the daemon socket path for a session ID.
 func SocketPath(id string) string {
-	return filepath.Join(sessionsDir, id+".sock")
+	return filepath.Join(dir(), id+".sock")
 }
 
 // FilePath returns the JSON session file path for a session ID.
 func FilePath(id string) string {
-	return filepath.Join(sessionsDir, id+".json")
+	return filepath.Join(dir(), id+".json")
 }
 
 // LoadFromFile loads a session from an explicit file path without
@@ -518,7 +526,7 @@ func Delete(id string) error {
 	}
 
 	// Remove from disk (session file and daemon socket).
-	if err := os.Remove(filepath.Join(sessionsDir, id+".json")); err != nil && !os.IsNotExist(err) {
+	if err := os.Remove(filepath.Join(dir(), id+".json")); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("failed to remove session file: %w", err)
 	}
 	_ = os.Remove(SocketPath(id))
@@ -569,7 +577,7 @@ func CleanupOrphanedProcesses() error {
 
 			// If no alive processes, remove session file
 			if !hasAliveProcess {
-				filePath := filepath.Join(sessionsDir, sess.ID+".json")
+				filePath := filepath.Join(dir(), sess.ID+".json")
 				_ = os.Remove(filePath)
 			}
 		}
@@ -850,8 +858,8 @@ func (s *Session) Rename(newID string) error {
 	sessionsMu.RUnlock()
 
 	oldID := s.ID
-	oldPath := filepath.Join(sessionsDir, oldID+".json")
-	newPath := filepath.Join(sessionsDir, newID+".json")
+	oldPath := filepath.Join(dir(), oldID+".json")
+	newPath := filepath.Join(dir(), newID+".json")
 
 	// Update in-memory map
 	sessionsMu.Lock()

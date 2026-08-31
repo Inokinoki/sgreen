@@ -5,6 +5,9 @@ on:
     branches: [ main, develop, feature/* ]
   pull_request:
     branches: [ main, develop ]
+  schedule:
+    # Weekly full test; enables the weekly-full-test job below.
+    - cron: '0 4 * * 1'
 
 jobs:
   test:
@@ -12,15 +15,15 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-    
+
     steps:
     - uses: actions/checkout@v4
-    
+
     - name: Set up Go
       uses: actions/setup-go@v5
       with:
         go-version: '1.24'
-    
+
     - name: Cache Go modules
       uses: actions/cache@v4
       with:
@@ -28,27 +31,37 @@ jobs:
         key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
         restore-keys: |
           ${{ runner.os }}-go-
-    
+
     - name: Install dependencies
       run: go mod download
-    
-    - name: Run all tests
-      run: go test -v -race ./...
-    
-    - name: Generate coverage report
+
+    - name: Run all tests with coverage
+      shell: bash
       run: |
-        go test -coverprofile=coverage.out ./...
-        go tool cover -func=coverage.out
-    
+        # -race needs a working gcc toolchain, which has been flaky on the
+        # Windows runners; coverage runs there without it.
+        RACE="-race"
+        if [[ "${{ runner.os }}" == "Windows" ]]; then
+          RACE=""
+        fi
+        # -coverpkg merges coverage contributed by tests in every package
+        # (e.g. tests hitting exported APIs of internal packages); without
+        # it those tests are invisible to the total.
+        go test -v $RACE -covermode=atomic -coverprofile=coverage.out -coverpkg=./... ./...
+
+    - name: Report coverage
+      run: go tool cover -func=coverage.out
+
     - name: Check coverage threshold
+      shell: bash
       run: |
-        COVERAGE=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | sed 's/%//')
+        COVERAGE=$(go tool cover -func=coverage.out | awk '/^total:/ {gsub(/%/,"",$3); print $3}')
         echo "Total coverage: $COVERAGE%"
-        if (( $(echo "$COVERAGE < 10" | bc -l) )); then
-          echo "Coverage below 10% threshold"
+        if (( $(echo "$COVERAGE < 15" | bc -l) )); then
+          echo "Coverage below 15% threshold"
           exit 1
         fi
-    
+
     - name: Upload coverage to Codecov
       uses: codecov/codecov-action@v5
       with:
@@ -57,48 +70,49 @@ jobs:
         name: codecov-umbrella
         fail_ci_if_error: false
 
-  benchmark:
-    runs-on: ubuntu-latest
-    
-    steps:
-    - uses: actions/checkout@v4
-    
-    - name: Set up Go
-      uses: actions/setup-go@v5
-      with:
-        go-version: '1.24'
-    
-    - name: Run benchmarks
-      run: |
-        go test -bench=. -benchmem ./tests/performance/... | tee benchmark.txt || true
-    
-    - name: Upload benchmark results
-      uses: actions/upload-artifact@v4
-      with:
-        name: benchmark-results
-        path: benchmark.txt
-        if-no-files-found: ignore
-
   weekly-full-test:
     runs-on: ubuntu-latest
     if: github.event_name == 'schedule'
-    
+
     steps:
     - uses: actions/checkout@v4
-    
+
     - name: Set up Go
       uses: actions/setup-go@v5
       with:
         go-version: '1.24'
-    
+
     - name: Run all tests with race detection
       run: go test -race -count=1 ./...
-    
-    - name: Run memory leak tests
-      run: go test -memprofile=mem.prof ./tests/performance/... || true
-    
-    - name: Run stress tests
-      run: go test -v -tags=stress ./tests/performance/... || true
-    
+
+    - name: Install GNU screen
+      run: sudo apt-get update && sudo apt-get install -y screen
+
     - name: Run GNU Screen comparison
-      run: ./test/behavior/compare_with_gnu_screen.sh || true
+      shell: bash
+      run: |
+        mkdir -p build
+        go build -o build/sgreen ./cmd/sgreen
+        SGREEN_BIN="$PWD/build/sgreen" SCREEN_BIN="$(command -v screen)" \
+          REPORT_PATH="$PWD/test/behavior/gnu_screen_comparison_results.md" \
+          test/behavior/compare_with_gnu_screen.sh
+
+    - name: Assert no behavior diffs
+      shell: bash
+      run: |
+        report="test/behavior/gnu_screen_comparison_results.md"
+        if grep -q "different /" "$report"; then
+          echo "GNU parity comparison found differences:"
+          grep "different /" "$report"
+          exit 1
+        fi
+        echo "GNU parity comparison clean."
+
+    - name: Upload parity report
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: weekly-gnu-screen-parity
+        path: test/behavior/gnu_screen_comparison_results.md
+        if-no-files-found: ignore
+        retention-days: 30

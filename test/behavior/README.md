@@ -14,20 +14,23 @@ This document describes behavior tests for the sgreen CLI so that the same expec
 
 These can run in any environment (pipes, CI, no TTY).
 
+Exit codes and messages below are verified against GNU screen 4.09
+(the compare script re-verifies them on every run).
+
 | ID | Description | Command | Expected exit code | Expected stdout/stderr | Platform |
 |----|-------------|---------|--------------------|------------------------|----------|
-| B1.1 | Version | `sgreen -v` | 0 | stdout contains "sgreen version 0.1.0" (or current version) | all |
-| B1.2 | Help short | `sgreen -h` | 0 | stdout contains "Usage:" and "sgreen" | all |
+| B1.1 | Version | `sgreen -v` | 0 | stdout contains "Screen version" | all |
+| B1.2 | Help short | `sgreen -h` | 0 | stdout contains "Use:" usage block | all |
 | B1.3 | Help long | `sgreen -help` | 0 | same as B1.2 | all |
-| B1.4 | List when no sessions | `sgreen -ls` | 0 | stdout contains "No Sockets found" (or "No screen session") | all |
-| B1.5 | List alternative flag | `sgreen -list` | 0 | same behavior as B1.4 | all |
-| B1.6 | Reattach when no sessions | `sgreen -r` | non-zero | stderr contains "No screen session found" | all |
-| B1.7 | Reattach to missing name | `sgreen -r nosuchsession123` | non-zero | stderr contains "No screen session found" and "nosuchsession123" | all |
-| B1.8 | Wipe when no sessions | `sgreen -wipe` | 0 | stdout contains "No dead sessions found" | all |
-| B1.9 | Detach when no sessions | `sgreen -d` | non-zero | stderr contains "No screen session found" | all |
-| B1.10 | Power detach when no sessions | `sgreen -D` | non-zero | stderr contains "No screen session found" | all |
-| B1.11 | Send command when no sessions | `sgreen -X stuff x` | non-zero | stderr contains "No screen session found" | all |
-| B1.12 | Unknown flag | `sgreen -unknown` | non-zero | stderr mentions flag or usage | all |
+| B1.4 | List when no sessions | `sgreen -ls` | 1 | stdout contains "No Sockets found in" | all |
+| B1.5 | List alternative flag | `sgreen -list` | 1 | same behavior as B1.4 | all |
+| B1.6 | Reattach when no sessions | `sgreen -r` | 1 | stderr contains "There is no screen to be resumed." | all |
+| B1.7 | Reattach to missing name | `sgreen -r nosuchsession123` | 1 | stderr contains "There is no screen to be resumed matching nosuchsession123." | all |
+| B1.8 | Wipe when no sessions | `sgreen -wipe` | 1 | stdout contains "No Sockets found in" | all |
+| B1.9 | Detach when no sessions | `sgreen -d` | 1 | stderr contains "There is no screen to be detached." | all |
+| B1.10 | Power detach when no sessions | `sgreen -D` | 1 | stderr contains "There is no screen to be detached." | all |
+| B1.11 | Send command when no sessions | `sgreen -X stuff x` | 1 | stderr contains "No screen session found." | all |
+| B1.12 | Unknown flag | `sgreen -unknown` | 1 | stdout contains "Use:" usage block | all |
 
 ---
 
@@ -54,7 +57,7 @@ These create or attach to sessions; run only when a PTY is available (or in a PT
 
 | ID | Description | Command | Expected | Platform |
 |----|-------------|---------|----------|----------|
-| B3.1 | -q quiet | `sgreen -q -ls` | exit 0; no extra startup messages | all |
+| B3.1 | -q quiet | `sgreen -q -ls` | exit 9 with no sessions (GNU: 9=none, 10=unusable, 11+n=usable); no output | all |
 | B3.2 | -m ignore STY | With `STY=123.pts.host` set, `sgreen -m -ls` | Uses normal behavior; does not try to attach from STY | all |
 | B3.3 | -S name | `sgreen -S myname -ls` then create session with `-S myname` | Session name is "myname" in list | all |
 | B3.4 | -c config file | `sgreen -c /nonexistent -ls` | exit 0 (config optional); if config missing, may warn | all |
