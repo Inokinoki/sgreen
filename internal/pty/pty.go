@@ -47,9 +47,8 @@ func Start(cmdPath string, args []string) (*PTYProcess, error) {
 
 // StartWithEnv creates a new PTY process with custom environment variables
 func StartWithEnv(cmdPath string, args []string, envOverrides map[string]string) (*PTYProcess, error) {
-	wrappedCmdPath, wrappedArgs := wrapCommandForDetach(cmdPath, args)
 	buildCmd := func(withProcessGroup bool) *exec.Cmd {
-		cmd := exec.Command(wrappedCmdPath, wrappedArgs...)
+		cmd := exec.Command(cmdPath, args...)
 		if withProcessGroup {
 			// Set process group management (Unix only)
 			setProcessGroup(cmd)

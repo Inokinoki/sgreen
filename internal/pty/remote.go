@@ -3,6 +3,7 @@ package pty
 import (
 	"net"
 	"sync"
+	"time"
 )
 
 // Remote is a live connection to a session daemon. When a PTYProcess
@@ -41,6 +42,16 @@ func (r *Remote) Write(p []byte) (int, error) { return r.conn.Write(p) }
 
 // Close closes the data connection (this detaches the client).
 func (r *Remote) Close() error { return r.conn.Close() }
+
+// SetReadDeadline sets the read deadline when the underlying connection
+// supports it (Unix sockets do).
+func (r *Remote) SetReadDeadline(t time.Time) error {
+	type deadliner interface{ SetReadDeadline(time.Time) error }
+	if d, ok := r.conn.(deadliner); ok {
+		return d.SetReadDeadline(t)
+	}
+	return nil
+}
 
 // Resize asks the daemon to apply a window size to the session PTY.
 func (r *Remote) Resize(rows, cols uint16) error {

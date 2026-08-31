@@ -5,11 +5,16 @@ package daemon
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
+	"strconv"
 	"strings"
 	"time"
+
+	"github.com/inoki/sgreen/internal/pty"
+	"github.com/inoki/sgreen/internal/session"
 )
 
 // connectControl opens a short-lived control connection to a session daemon.
@@ -48,6 +53,7 @@ func controlRoundtrip(socketPath, command string) (string, error) {
 type Status struct {
 	Attached bool
 	Count    int
+	Current  int
 }
 
 // QueryStatus asks a session daemon whether anyone is attached.
@@ -60,11 +66,15 @@ func QueryStatus(socketPath string) (*Status, error) {
 	case resp == "OK DETACHED":
 		return &Status{Attached: false}, nil
 	case strings.HasPrefix(resp, "OK ATTACHED"):
-		var n int
-		if _, err := fmt.Sscanf(resp, "OK ATTACHED %d", &n); err != nil || n < 1 {
+		var n, cur int
+		if _, err := fmt.Sscanf(resp, "OK ATTACHED %d %d", &n, &cur); err != nil || n < 1 {
 			n = 1
 		}
-		return &Status{Attached: true, Count: n}, nil
+		return &Status{Attached: true, Count: n, Current: cur}, nil
+	case strings.HasPrefix(resp, "OK DETACHED "):
+		var cur int
+		_, _ = fmt.Sscanf(resp, "OK DETACHED %d", &cur)
+		return &Status{Attached: false, Current: cur}, nil
 	default:
 		return nil, fmt.Errorf("daemon status: %s", resp)
 	}
@@ -87,7 +97,7 @@ func SendDetach(socketPath string, power bool) error {
 	return nil
 }
 
-// SendQuit terminates the session (daemon kills the program and cleans up).
+// SendQuit terminates the session (daemon kills the programs and cleans up).
 func SendQuit(socketPath string) error {
 	resp, err := controlRoundtrip(socketPath, "QUIT")
 	if err != nil {
@@ -99,7 +109,7 @@ func SendQuit(socketPath string) error {
 	return nil
 }
 
-// SendStuff writes data to the session program's input as if typed.
+// SendStuff writes data to the current window's program as if typed.
 func SendStuff(socketPath string, data string) error {
 	encoded := base64.StdEncoding.EncodeToString([]byte(data))
 	resp, err := controlRoundtrip(socketPath, "STUFF "+encoded)
@@ -112,9 +122,10 @@ func SendStuff(socketPath string, data string) error {
 	return nil
 }
 
-// SendResize applies a terminal window size to the session PTY.
-func SendResize(socketPath string, rows, cols uint16) error {
-	resp, err := controlRoundtrip(socketPath, fmt.Sprintf("RESIZE %d %d", rows, cols))
+// SendResizeWindow applies a terminal window size to one window's PTY.
+func SendResizeWindow(socketPath string, winID int, rows, cols uint16) error {
+	command := fmt.Sprintf("RESIZE %d %d %d", winID, rows, cols)
+	resp, err := controlRoundtrip(socketPath, command)
 	if err != nil {
 		return err
 	}
@@ -124,28 +135,142 @@ func SendResize(socketPath string, rows, cols uint16) error {
 	return nil
 }
 
-// OpenAttach opens an ATTACH data connection to the session daemon and
-// performs the handshake. The returned connection carries raw PTY data.
-func OpenAttach(socketPath string) (net.Conn, error) {
+// OpenAttach opens an ATTACH data connection for one window and performs
+// the handshake. The returned connection carries raw PTY data.
+func OpenAttach(socketPath string, winID int) (net.Conn, error) {
 	conn, err := net.DialTimeout("unix", socketPath, 2*time.Second)
 	if err != nil {
 		return nil, err
 	}
-	if _, err := conn.Write([]byte("ATTACH\n")); err != nil {
+	if _, err := conn.Write([]byte(fmt.Sprintf("ATTACH %d\n", winID))); err != nil {
 		_ = conn.Close()
 		return nil, err
 	}
 	// The daemon does not acknowledge ATTACH; relay starts immediately.
 	// Validate liveness with a STATUS probe on a separate connection so a
 	// dead daemon is detected before the caller enters raw mode.
-	status, err := QueryStatus(socketPath)
-	if err != nil {
+	if _, err := QueryStatus(socketPath); err != nil {
 		_ = conn.Close()
 		return nil, err
 	}
-	_ = status
 	return conn, nil
 }
 
 // ErrNoDaemon indicates no session daemon is listening on the socket.
 var ErrNoDaemon = errors.New("no session daemon")
+
+// Controller implements session.WindowController against a session daemon.
+type Controller struct {
+	socketPath string
+}
+
+// NewController returns a window controller talking to the daemon at
+// socketPath.
+func NewController(socketPath string) *Controller {
+	return &Controller{socketPath: socketPath}
+}
+
+// CreateWindow implements session.WindowController.
+func (c *Controller) CreateWindow(cmdPath string, args []string, term string) (int, error) {
+	argsJSON, err := json.Marshal(args)
+	if err != nil {
+		return 0, err
+	}
+	// "-" is the empty-token placeholder: strings.Fields would otherwise
+	// drop an empty base64 string and break the argument count.
+	if term == "" {
+		term = "-"
+	}
+	command := fmt.Sprintf("NEWWINDOW %s %s %s",
+		base64.StdEncoding.EncodeToString([]byte(cmdPath)),
+		base64.StdEncoding.EncodeToString(argsJSON),
+		base64.StdEncoding.EncodeToString([]byte(term)))
+	resp, err := controlRoundtrip(c.socketPath, command)
+	if err != nil {
+		return 0, err
+	}
+	id, ok := parseOKInt(resp)
+	if !ok {
+		return 0, fmt.Errorf("daemon newwindow: %s", resp)
+	}
+	return id, nil
+}
+
+// SwitchWindow implements session.WindowController.
+func (c *Controller) SwitchWindow(op string, arg string) (int, error) {
+	cmd := strings.ToUpper(op)
+	if cmd == "SELECT" {
+		cmd = "SELECT " + arg
+	}
+	resp, err := controlRoundtrip(c.socketPath, cmd)
+	if err != nil {
+		return 0, err
+	}
+	id, ok := parseOKInt(resp)
+	if !ok {
+		return 0, fmt.Errorf("daemon switch: %s", resp)
+	}
+	return id, nil
+}
+
+// KillWindow implements session.WindowController.
+func (c *Controller) KillWindow(winID int) error {
+	resp, err := controlRoundtrip(c.socketPath, fmt.Sprintf("KILLWINDOW %d", winID))
+	if err != nil {
+		return err
+	}
+	if resp != "OK" {
+		return fmt.Errorf("daemon killwindow: %s", resp)
+	}
+	return nil
+}
+
+// SetTitle implements session.WindowController.
+func (c *Controller) SetTitle(winID int, title string) error {
+	command := fmt.Sprintf("SETTITLE %d %s", winID, base64.StdEncoding.EncodeToString([]byte(title)))
+	resp, err := controlRoundtrip(c.socketPath, command)
+	if err != nil {
+		return err
+	}
+	if resp != "OK" {
+		return fmt.Errorf("daemon settitle: %s", resp)
+	}
+	return nil
+}
+
+// OpenWindowProcess implements session.WindowController: it returns a
+// relay endpoint for the window's PTY with control hooks bound to that
+// window.
+func (c *Controller) OpenWindowProcess(win *session.Window) (*pty.PTYProcess, error) {
+	if win == nil {
+		return nil, fmt.Errorf("nil window")
+	}
+	conn, err := OpenAttach(c.socketPath, win.ID)
+	if err != nil {
+		return nil, err
+	}
+	remote := pty.NewRemote(conn, pty.RemoteControl{
+		Resize: func(rows, cols uint16) error {
+			return SendResizeWindow(c.socketPath, win.ID, rows, cols)
+		},
+		Alive: func() bool {
+			_, err := QueryStatus(c.socketPath)
+			return err == nil
+		},
+		Quit: func() error {
+			return SendQuit(c.socketPath)
+		},
+	})
+	return pty.NewRemoteProcess(remote, win.PtsPath), nil
+}
+
+func parseOKInt(resp string) (int, bool) {
+	if !strings.HasPrefix(resp, "OK ") {
+		return 0, false
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(resp[3:]))
+	if err != nil {
+		return 0, false
+	}
+	return n, true
+}

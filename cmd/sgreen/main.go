@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/inoki/sgreen/internal/daemon"
-	"github.com/inoki/sgreen/internal/pty"
 	"github.com/inoki/sgreen/internal/session"
 	"github.com/inoki/sgreen/internal/ui"
 	xterm "golang.org/x/term"
@@ -1072,32 +1071,27 @@ func tryAttachViaDaemon(sess *session.Session, config *Config) bool {
 		debugAttachClient("stat socket failed: %v", err)
 		return false
 	}
-	debugAttachClient("socket found, opening attach")
+	debugAttachClient("socket found, validating daemon")
 
-	conn, err := daemon.OpenAttach(socketPath)
-	if err != nil {
+	if _, err := daemon.QueryStatus(socketPath); err != nil {
 		// Socket exists but daemon is gone: the session is dead.
 		_, _ = fmt.Fprintf(os.Stderr, "Error: session %s is not attachable (daemon not responding)\n", sess.ID)
 		os.Exit(1)
 	}
 
-	remote := pty.NewRemote(conn, pty.RemoteControl{
-		Resize: func(rows, cols uint16) error {
-			return daemon.SendResize(socketPath, rows, cols)
-		},
-		Alive: func() bool {
-			_, err := daemon.QueryStatus(socketPath)
-			return err == nil
-		},
-		Quit: func() error {
-			return daemon.SendQuit(socketPath)
-		},
-	})
-	proc := pty.NewRemoteProcess(remote, sess.PtsPath)
+	// Route window operations (create/switch/kill/retitle) to the daemon;
+	// the attach loop opens per-window relay connections through it.
+	ctrl := daemon.NewController(socketPath)
+	sess.Controller = ctrl
 	if win := sess.GetCurrentWindow(); win != nil {
+		proc, err := ctrl.OpenWindowProcess(win)
+		if err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "Error: cannot attach to session %s: %v\n", sess.ID, err)
+			os.Exit(1)
+		}
 		win.SetPTYProcess(proc)
 	}
-	debugAttachClient("remote endpoint installed, running attach UI")
+	debugAttachClient("remote controller installed, running attach UI")
 
 	// The daemon persists across detach, so no keeper is needed on detach.
 	runAttachUI(sess, config, nil)

@@ -24,10 +24,9 @@ func setMasterSize(master *os.File, rows, cols uint16) error {
 	})
 }
 
-// killSessionProcess kills the session program and its process group. The
-// session shell is wrapped in nohup, so closing the master alone would not
-// stop it.
-func killSessionProcess(pid int) {
+// killPid kills a process and its process group. The session shell is
+// wrapped in nohup, so closing the master alone would not stop it.
+func killPid(pid int) {
 	if pid <= 0 {
 		return
 	}

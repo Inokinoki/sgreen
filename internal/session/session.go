@@ -48,7 +48,10 @@ type Session struct {
 
 	// Runtime fields (not persisted)
 	PTYProcess *pty.PTYProcess `json:"-"` // Deprecated: use Windows[CurrentWindow] instead
-	mu         sync.RWMutex    `json:"-"`
+	// Controller, when set, routes window mutations to the session daemon
+	// that owns the PTY masters (set by the attach path; see controller.go).
+	Controller WindowController `json:"-"`
+	mu         sync.RWMutex     `json:"-"`
 }
 
 var (
@@ -651,6 +654,20 @@ func (s *Session) GetWindow(number string) *Window {
 
 // CreateWindow creates a new window in the session
 func (s *Session) CreateWindow(cmdPath string, args []string, config *Config) (*Window, error) {
+	if s.Controller != nil {
+		term := ""
+		if config != nil {
+			term = config.Term
+		}
+		if _, err := s.Controller.CreateWindow(cmdPath, args, term); err != nil {
+			return nil, err
+		}
+		if err := s.RefreshFromDisk(); err != nil {
+			return nil, err
+		}
+		return s.GetCurrentWindow(), nil
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -725,6 +742,13 @@ func (s *Session) CreateWindow(cmdPath string, args []string, config *Config) (*
 
 // SwitchToWindow switches to a window by number
 func (s *Session) SwitchToWindow(number string) error {
+	if s.Controller != nil {
+		if _, err := s.Controller.SwitchWindow("select", number); err != nil {
+			return err
+		}
+		return s.RefreshFromDisk()
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -753,6 +777,12 @@ func (s *Session) SwitchToWindow(number string) error {
 
 // NextWindow switches to the next window
 func (s *Session) NextWindow() {
+	if s.Controller != nil {
+		_, _ = s.Controller.SwitchWindow("next", "")
+		_ = s.RefreshFromDisk()
+		return
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if len(s.Windows) == 0 {
@@ -764,6 +794,12 @@ func (s *Session) NextWindow() {
 
 // PrevWindow switches to the previous window
 func (s *Session) PrevWindow() {
+	if s.Controller != nil {
+		_, _ = s.Controller.SwitchWindow("prev", "")
+		_ = s.RefreshFromDisk()
+		return
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if len(s.Windows) == 0 {
@@ -775,6 +811,12 @@ func (s *Session) PrevWindow() {
 
 // ToggleLastWindow switches to the last window
 func (s *Session) ToggleLastWindow() {
+	if s.Controller != nil {
+		_, _ = s.Controller.SwitchWindow("toggle", "")
+		_ = s.RefreshFromDisk()
+		return
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if len(s.Windows) == 0 {
@@ -785,6 +827,17 @@ func (s *Session) ToggleLastWindow() {
 
 // KillCurrentWindow kills the current window
 func (s *Session) KillCurrentWindow() error {
+	if s.Controller != nil {
+		win := s.GetCurrentWindow()
+		if win == nil {
+			return fmt.Errorf("no current window")
+		}
+		if err := s.Controller.KillWindow(win.ID); err != nil {
+			return err
+		}
+		return s.RefreshFromDisk()
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -824,6 +877,14 @@ func (s *Session) KillCurrentWindow() error {
 
 // SetWindowTitle sets the title of the current window
 func (s *Session) SetWindowTitle(title string) {
+	if s.Controller != nil {
+		if win := s.GetCurrentWindow(); win != nil {
+			win.Title = title // immediate local echo for the UI
+			_ = s.Controller.SetTitle(win.ID, title)
+		}
+		return
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if len(s.Windows) > 0 && s.CurrentWindow < len(s.Windows) {

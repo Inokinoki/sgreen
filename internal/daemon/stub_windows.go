@@ -7,7 +7,10 @@ package daemon
 
 import (
 	"errors"
-	"net"
+	"fmt"
+
+	"github.com/inoki/sgreen/internal/pty"
+	"github.com/inoki/sgreen/internal/session"
 )
 
 // Supported reports whether session daemons are available on this platform.
@@ -20,6 +23,7 @@ func RunFromEnv() bool { return false }
 type Status struct {
 	Attached bool
 	Count    int
+	Current  int
 }
 
 // ErrNoDaemon indicates no session daemon is listening on the socket.
@@ -37,8 +41,35 @@ func SendQuit(socketPath string) error { return ErrNoDaemon }
 // SendStuff always fails on Windows.
 func SendStuff(socketPath string, data string) error { return ErrNoDaemon }
 
-// SendResize always fails on Windows.
-func SendResize(socketPath string, rows, cols uint16) error { return ErrNoDaemon }
+// SendResizeWindow always fails on Windows.
+func SendResizeWindow(socketPath string, winID int, rows, cols uint16) error { return ErrNoDaemon }
 
-// OpenAttach always fails on Windows.
-func OpenAttach(socketPath string) (net.Conn, error) { return nil, ErrNoDaemon }
+// OpenAttach always fails on Windows; callers treat this as "no daemon".
+func OpenAttach(socketPath string, winID int) (conn any, err error) {
+	return nil, ErrNoDaemon
+}
+
+// Controller is a stub on Windows.
+type Controller struct{}
+
+// NewController returns a stub controller on Windows.
+func NewController(socketPath string) *Controller { return &Controller{} }
+
+// CreateWindow always fails on Windows.
+func (c *Controller) CreateWindow(cmdPath string, args []string, term string) (int, error) {
+	return 0, ErrNoDaemon
+}
+
+// SwitchWindow always fails on Windows.
+func (c *Controller) SwitchWindow(op string, arg string) (int, error) { return 0, ErrNoDaemon }
+
+// KillWindow always fails on Windows.
+func (c *Controller) KillWindow(winID int) error { return ErrNoDaemon }
+
+// SetTitle always fails on Windows.
+func (c *Controller) SetTitle(winID int, title string) error { return ErrNoDaemon }
+
+// OpenWindowProcess always fails on Windows.
+func (c *Controller) OpenWindowProcess(win *session.Window) (*pty.PTYProcess, error) {
+	return nil, fmt.Errorf("session daemon not supported on windows")
+}
