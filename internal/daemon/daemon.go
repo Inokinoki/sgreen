@@ -21,6 +21,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -242,7 +243,21 @@ func Run(master *os.File, sessionFile, sessionID, socketPath string, sessionPid 
 // session ends once the last window is gone.
 func startWindowRelay(st *state, w *winState, logger *log.Logger) {
 	go relayWindow(st, w, logger, func() {
-		removeWindow(st, w.id, logger)
+		// Resolve the window by identity: IDs are renumbered when other
+		// windows die, so w.id may be stale - or already reused by a
+		// different window - by the time this fires.
+		st.mu.Lock()
+		id := -1
+		for i, cur := range st.windows {
+			if cur == w {
+				id = i
+				break
+			}
+		}
+		st.mu.Unlock()
+		if id >= 0 {
+			removeWindow(st, id, logger)
+		}
 		if len(st.snapshotWindows()) == 0 && st.endSession != nil {
 			st.endSession()
 		}
@@ -345,6 +360,23 @@ func removeWindow(st *state, winID int, logger *log.Logger) {
 			}
 			if st.sessionObj.LastWindow >= len(st.sessionObj.Windows) {
 				st.sessionObj.LastWindow = 0
+			}
+			// Rekey the daemon window states to match the renumbered
+			// session file: both represent the same surviving windows in
+			// the same order, so ascending old IDs map positionally onto
+			// the new 0..n-1 IDs. Without this, lookups by window ID
+			// (ATTACH, RESIZE, STUFF, KILLWINDOW) miss after a kill.
+			ids := make([]int, 0, len(st.windows))
+			for id := range st.windows {
+				ids = append(ids, id)
+			}
+			sort.Ints(ids)
+			if len(ids) == len(st.sessionObj.Windows) {
+				rekeyed := make(map[int]*winState, len(ids))
+				for newID, oldID := range ids {
+					rekeyed[newID] = st.windows[oldID]
+				}
+				st.windows = rekeyed
 			}
 			st.saveLocked()
 		}
@@ -564,13 +596,9 @@ func serveControl(conn net.Conn, st *state, logger *log.Logger, onQuit func()) {
 				continue
 			}
 			st.mu.Lock()
-			count := len(st.windows)
 			w := st.windows[wid]
+			count := len(st.windows)
 			st.mu.Unlock()
-			if count <= 1 {
-				_, _ = conn.Write([]byte("ERR cannot kill the last window\n"))
-				continue
-			}
 			if w == nil {
 				_, _ = conn.Write([]byte("ERR no such window\n"))
 				continue
@@ -580,6 +608,13 @@ func serveControl(conn net.Conn, st *state, logger *log.Logger, onQuit func()) {
 			// The relay goroutine observes master EOF; force removal too so
 			// the reply reflects the new state.
 			removeWindow(st, wid, logger)
+			if count <= 1 {
+				// GNU semantics: killing the last window terminates the
+				// whole session ("[screen is terminating]").
+				_, _ = conn.Write([]byte("OK\n"))
+				st.endSession()
+				return
+			}
 			_, _ = conn.Write([]byte("OK\n"))
 		case "SETTITLE":
 			// SETTITLE <winid> <base64 title>

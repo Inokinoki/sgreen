@@ -198,8 +198,7 @@ func main() {
 	// Handle send command (-X). Everything after the -X value belongs to
 	// the command, mirroring "screen -X stuff hello".
 	if *sendCommand != "" {
-		commandWords := append([]string{*sendCommand}, flag.Args()...)
-		handleSendCommand(*sessionName, strings.Join(commandWords, " "))
+		handleSendCommand(*sessionName, *sendCommand, flag.Args())
 		return
 	}
 
@@ -350,8 +349,11 @@ func pluralSuffix(count int) string {
 	return "s"
 }
 
-// handleSendCommand sends a command to a running session (-X).
-func handleSendCommand(sessionName, command string) {
+// handleSendCommand sends a command to a running session (-X). command is
+// the -X flag value, rest the positional arguments; both are kept separate
+// because commands like "stuff" need the arguments' embedded whitespace
+// (e.g. the trailing newline that submits a shell command) verbatim.
+func handleSendCommand(sessionName, command string, rest []string) {
 	if strings.TrimSpace(command) == "" {
 		_, _ = fmt.Fprintln(os.Stderr, "Please specify a command.")
 		os.Exit(1)
@@ -381,8 +383,7 @@ func handleSendCommand(sessionName, command string) {
 		sess = sessions[0]
 	}
 
-	parts := strings.Fields(command)
-	cmd := parts[0]
+	cmd := strings.Fields(command)[0]
 	socketPath := session.SocketPath(sess.ID)
 
 	switch cmd {
@@ -408,21 +409,102 @@ func handleSendCommand(sessionName, command string) {
 		}
 	case "stuff":
 		if daemon.Supported() {
-			data := ""
-			if len(parts) > 1 {
-				data = strings.Join(parts[1:], " ")
-			}
+			// Join the raw positional arguments: their inner whitespace
+			// (spaces, the trailing \n that submits a command) must
+			// survive; strings.Fields would strip it.
+			data := strings.Join(rest, " ")
 			if err := daemon.SendStuff(socketPath, data); err != nil {
 				_, _ = fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
 			}
 			return
 		}
+	case "screen":
+		// -X screen [cmd [args...]]: create a window, defaulting to a shell.
+		if !daemon.Supported() {
+			return
+		}
+		ctrl := daemon.NewController(socketPath)
+		cmdPath, cmdArgs := defaultWindowCommand(rest)
+		if _, err := ctrl.CreateWindow(cmdPath, cmdArgs, ""); err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	case "select":
+		// -X select <number>: switch the session's current window.
+		if !daemon.Supported() {
+			return
+		}
+		if len(rest) == 0 {
+			_, _ = fmt.Fprintln(os.Stderr, "Error: select requires a window number")
+			os.Exit(1)
+		}
+		ctrl := daemon.NewController(socketPath)
+		if _, err := ctrl.SwitchWindow("select", rest[0]); err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	case "kill":
+		// -X kill: kill the current window; the last window ends the
+		// session (GNU semantics).
+		if !daemon.Supported() {
+			return
+		}
+		if err := daemon.SendKillCurrent(socketPath); err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	case "title":
+		if !daemon.Supported() {
+			return
+		}
+		title := strings.Join(rest, " ")
+		if err := daemon.SendTitleCurrent(socketPath, title); err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	case "windows":
+		// GNU shows this on the session's message line; printing the list
+		// to the caller makes -X windows useful for scripting.
+		if err := sess.RefreshFromDisk(); err == nil {
+			for _, win := range sess.Windows {
+				if win == nil {
+					continue
+				}
+				marker := " "
+				if win.ID == sess.CurrentWindow {
+					marker = "*"
+				}
+				name := win.Title
+				if name == "" {
+					name = win.CmdPath
+				}
+				fmt.Printf("%d%s %s\n", win.ID, marker, name)
+			}
+		}
+		return
 	default:
 		// GNU screen delivers arbitrary commands asynchronously and exits
 		// 0 even for commands the session does not know; mirror that.
 		return
 	}
+}
+
+// defaultWindowCommand resolves the command for a new window: the given
+// command when present, otherwise the user's shell.
+func defaultWindowCommand(parts []string) (string, []string) {
+	if len(parts) > 0 {
+		return parts[0], parts[1:]
+	}
+	shellPath := "/bin/sh"
+	if envShell := os.Getenv("SHELL"); envShell != "" {
+		shellPath = envShell
+	}
+	return shellPath, nil
 }
 
 // handleNew creates a new session

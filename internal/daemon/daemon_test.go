@@ -227,15 +227,12 @@ func TestDaemonWindowLifecycle(t *testing.T) {
 		t.Fatalf("title = %q", s.Windows[1].Title)
 	}
 
-	// Killing the last remaining window is refused (GNU semantics).
+	// Killing a non-last window removes and renumbers it.
 	if err := f.ctrl.KillWindow(1); err != nil {
 		t.Fatalf("KillWindow(1): %v", err)
 	}
 	if s := f.readSessionFile(); len(s.Windows) != 1 {
 		t.Fatalf("windows after kill = %d, want 1", len(s.Windows))
-	}
-	if err := f.ctrl.KillWindow(0); err == nil {
-		t.Fatal("KillWindow on the last window should fail")
 	}
 
 	// Detach closes client connections.
@@ -269,4 +266,29 @@ func TestDaemonShrinksWhenWindowProgramExits(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	t.Fatalf("session did not shrink after window exit: %+v", f.readSessionFile().Windows)
+}
+
+func TestDaemonKillLastWindowEndsSession(t *testing.T) {
+	f := newDaemonFixture(t)
+
+	// GNU semantics: killing the last remaining window terminates the
+	// session (daemon removes its files and exits).
+	if err := f.ctrl.KillWindow(0); err != nil {
+		t.Fatalf("KillWindow(0): %v", err)
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if f.exited() {
+			if _, err := os.Stat(f.sessFile); !os.IsNotExist(err) {
+				t.Errorf("session file should be gone after last window kill, stat err = %v", err)
+			}
+			if _, err := os.Stat(f.sockPath); !os.IsNotExist(err) {
+				t.Errorf("socket should be gone after last window kill, stat err = %v", err)
+			}
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("daemon did not end the session after the last window was killed")
 }

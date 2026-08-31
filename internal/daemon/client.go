@@ -264,6 +264,36 @@ func (c *Controller) OpenWindowProcess(win *session.Window) (*pty.PTYProcess, er
 	return pty.NewRemoteProcess(remote, win.PtsPath), nil
 }
 
+// SendKillCurrent kills the session's current window. Killing the last
+// window ends the session (GNU semantics).
+func SendKillCurrent(socketPath string) error {
+	cur, err := currentWindow(socketPath)
+	if err != nil {
+		return err
+	}
+	ctrl := &Controller{socketPath: socketPath}
+	return ctrl.KillWindow(cur)
+}
+
+// SendTitleCurrent renames the session's current window.
+func SendTitleCurrent(socketPath string, title string) error {
+	cur, err := currentWindow(socketPath)
+	if err != nil {
+		return err
+	}
+	ctrl := &Controller{socketPath: socketPath}
+	return ctrl.SetTitle(cur, title)
+}
+
+// currentWindow asks the daemon which window is current.
+func currentWindow(socketPath string) (int, error) {
+	st, err := QueryStatus(socketPath)
+	if err != nil {
+		return 0, err
+	}
+	return st.Current, nil
+}
+
 func parseOKInt(resp string) (int, bool) {
 	if !strings.HasPrefix(resp, "OK ") {
 		return 0, false

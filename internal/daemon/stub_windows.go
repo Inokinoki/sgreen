@@ -69,6 +69,12 @@ func (c *Controller) KillWindow(winID int) error { return ErrNoDaemon }
 // SetTitle always fails on Windows.
 func (c *Controller) SetTitle(winID int, title string) error { return ErrNoDaemon }
 
+// SendKillCurrent always fails on Windows.
+func SendKillCurrent(socketPath string) error { return ErrNoDaemon }
+
+// SendTitleCurrent always fails on Windows.
+func SendTitleCurrent(socketPath string, title string) error { return ErrNoDaemon }
+
 // OpenWindowProcess always fails on Windows.
 func (c *Controller) OpenWindowProcess(win *session.Window) (*pty.PTYProcess, error) {
 	return nil, fmt.Errorf("session daemon not supported on windows")
