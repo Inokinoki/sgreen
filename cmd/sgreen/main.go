@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -363,9 +364,12 @@ func handleSendCommand(sessionName, command string, rest []string) {
 	var sess *session.Session
 
 	if sessionName != "" {
-		var err error
-		sess, err = session.Load(sessionName)
-		if err != nil {
+		var matches []*session.Session
+		sess, matches = resolveSessionTarget(sessionName)
+		if sess == nil {
+			if len(matches) > 0 {
+				printCandidateList(matches)
+			}
 			_, _ = fmt.Fprintln(os.Stderr, "No screen session found.")
 			os.Exit(1)
 		}
@@ -383,7 +387,15 @@ func handleSendCommand(sessionName, command string, rest []string) {
 		sess = sessions[0]
 	}
 
-	cmd := strings.Fields(command)[0]
+	fields := strings.Fields(command)
+	cmd := fields[0]
+	// rest holds the positional arguments ("sgreen -X stuff hello world");
+	// with the quoted whole-command form ('sgreen -X "stuff hello"') the
+	// words live in the flag value instead.
+	args := rest
+	if len(args) == 0 && len(fields) > 1 {
+		args = fields[1:]
+	}
 	socketPath := session.SocketPath(sess.ID)
 
 	switch cmd {
@@ -412,7 +424,7 @@ func handleSendCommand(sessionName, command string, rest []string) {
 			// Join the raw positional arguments: their inner whitespace
 			// (spaces, the trailing \n that submits a command) must
 			// survive; strings.Fields would strip it.
-			data := strings.Join(rest, " ")
+			data := strings.Join(args, " ")
 			if err := daemon.SendStuff(socketPath, data); err != nil {
 				_, _ = fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
@@ -420,15 +432,28 @@ func handleSendCommand(sessionName, command string, rest []string) {
 			return
 		}
 	case "screen":
-		// -X screen [cmd [args...]]: create a window, defaulting to a shell.
+		// -X screen [-t title] [cmd [args...]]: create a window,
+		// defaulting to a shell (GNU's -X screen passes -t through).
 		if !daemon.Supported() {
 			return
 		}
+		title := ""
+		if len(args) >= 2 && args[0] == "-t" {
+			title = args[1]
+			args = args[2:]
+		}
 		ctrl := daemon.NewController(socketPath)
-		cmdPath, cmdArgs := defaultWindowCommand(rest)
-		if _, err := ctrl.CreateWindow(cmdPath, cmdArgs, ""); err != nil {
+		cmdPath, cmdArgs := defaultWindowCommand(args)
+		winID, err := ctrl.CreateWindow(cmdPath, cmdArgs, "")
+		if err != nil {
 			_, _ = fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
+		}
+		if title != "" {
+			if err := ctrl.SetTitle(winID, title); err != nil {
+				_, _ = fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
 		}
 		return
 	case "select":
@@ -436,12 +461,12 @@ func handleSendCommand(sessionName, command string, rest []string) {
 		if !daemon.Supported() {
 			return
 		}
-		if len(rest) == 0 {
+		if len(args) == 0 {
 			_, _ = fmt.Fprintln(os.Stderr, "Error: select requires a window number")
 			os.Exit(1)
 		}
 		ctrl := daemon.NewController(socketPath)
-		if _, err := ctrl.SwitchWindow("select", rest[0]); err != nil {
+		if _, err := ctrl.SwitchWindow("select", args[0]); err != nil {
 			_, _ = fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
@@ -461,7 +486,7 @@ func handleSendCommand(sessionName, command string, rest []string) {
 		if !daemon.Supported() {
 			return
 		}
-		title := strings.Join(rest, " ")
+		title := strings.Join(args, " ")
 		if err := daemon.SendTitleCurrent(socketPath, title); err != nil {
 			_, _ = fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
@@ -800,11 +825,18 @@ func handleReattachWithConfig(sessionName string, config *Config) {
 		config = &Config{}
 	}
 
+	resolve := func(name string) (*session.Session, []*session.Session, error) {
+		sess, candidates := resolveSessionTarget(name)
+		if sess == nil {
+			return nil, candidates, fmt.Errorf("no unique session matching %s", name)
+		}
+		return sess, nil, nil
+	}
 	sess, errMsg, printList := selectReattachSession(
 		sessions,
 		sessionName,
 		config.Multiuser,
-		session.Load,
+		resolve,
 		isSessionAttached,
 	)
 	if errMsg != "" {
@@ -857,7 +889,7 @@ func selectReattachSession(
 	sessions []*session.Session,
 	sessionName string,
 	multiuser bool,
-	loadByName func(string) (*session.Session, error),
+	resolveByName func(string) (*session.Session, []*session.Session, error),
 	isAttached func(*session.Session) bool,
 ) (*session.Session, string, bool) {
 	if len(sessions) == 0 {
@@ -868,12 +900,12 @@ func selectReattachSession(
 	}
 
 	if sessionName != "" {
-		sess, err := loadByName(sessionName)
+		sess, candidates, err := resolveByName(sessionName)
 		if err != nil {
 			if multiuser {
 				return nil, noAttachableScreenMessage(sessionName), false
 			}
-			return nil, noResumableScreenMessage(sessionName), false
+			return nil, noResumableScreenMessage(sessionName), len(candidates) > 0
 		}
 		if !multiuser && isAttached(sess) {
 			// GNU prints the session list, then the "no screen to be
@@ -916,12 +948,13 @@ func handleReattachOrCreate(sessionName string, cmdArgs []string, config *Config
 	sessions := session.List()
 
 	if sessionName != "" {
-		sess, err := session.Load(sessionName)
-		if err != nil || !sessionUsable(sess) {
+		loaded, _ := resolveSessionTarget(sessionName)
+		if loaded == nil || !sessionUsable(loaded) {
 			// Session not found (or dead), create new one with this name.
 			handleNew(sessionName, cmdArgs, config)
 			return
 		}
+		sess := loaded
 		if isSessionAttached(sess) {
 			// Attached elsewhere: GNU -R lists it and starts a new session.
 			fmt.Println("There is a screen on:")
@@ -955,13 +988,13 @@ func handleReattachOrCreateRR(sessionName string, cmdArgs []string, config *Conf
 	sessions := session.List()
 
 	if sessionName != "" {
-		sess, err := session.Load(sessionName)
-		if err != nil || !sessionUsable(sess) {
+		loaded, _ := resolveSessionTarget(sessionName)
+		if loaded == nil || !sessionUsable(loaded) {
 			handleNew(sessionName, cmdArgs, config)
 			return
 		}
-		detachSessionIfAttached(sess, true)
-		attachToSession(sess, config)
+		detachSessionIfAttached(loaded, true)
+		attachToSession(loaded, config)
 		return
 	}
 
@@ -1013,8 +1046,9 @@ func handleRemoteDetach(sessionName string, power bool) {
 
 	var candidates []*session.Session
 	if sessionName != "" {
-		sess, err := session.Load(sessionName)
-		if err != nil {
+		sess, matches := resolveSessionTarget(sessionName)
+		if sess == nil {
+			printCandidateList(matches)
 			_, _ = fmt.Fprintln(os.Stderr, noDetachableScreenMessage(sessionName))
 			os.Exit(1)
 		}
@@ -1069,10 +1103,11 @@ func handleDetachAndResume(power bool, sessionName string, cmdArgs []string, res
 
 	var sess *session.Session
 	if sessionName != "" {
-		loaded, err := session.Load(sessionName)
-		if err == nil {
+		loaded, matches := resolveSessionTarget(sessionName)
+		if loaded != nil {
 			sess = loaded
 		} else if !create && !createRR {
+			printCandidateList(matches)
 			_, _ = fmt.Fprintln(os.Stderr, noResumableScreenMessage(sessionName))
 			os.Exit(1)
 		}
@@ -1463,18 +1498,25 @@ func handleList(quiet bool) int {
 		return 1
 	}
 
-	if len(allSessions) == 1 {
+	// GNU lists sockets newest-first.
+	sessionsSorted := make([]*session.Session, len(allSessions))
+	copy(sessionsSorted, allSessions)
+	sort.SliceStable(sessionsSorted, func(i, j int) bool {
+		return sessionsSorted[i].CreatedAt.After(sessionsSorted[j].CreatedAt)
+	})
+
+	if len(sessionsSorted) == 1 {
 		fmt.Println("There is a screen on:")
 	} else {
 		fmt.Println("There are screens on:")
 	}
-	for _, sess := range allSessions {
+	for _, sess := range sessionsSorted {
 		fmt.Println(sessionListEntry(sess))
 	}
 	if len(dead) > 0 {
 		fmt.Println("Remove dead screens with 'screen -wipe'.")
 	}
-	fmt.Printf("%d %s in %s.\n", len(allSessions), socketWord(len(allSessions)), screenSocketDirForDisplay())
+	fmt.Printf("%d %s in %s.\n", len(sessionsSorted), socketWord(len(sessionsSorted)), screenSocketDirForDisplay())
 	return 0
 }
 
@@ -1513,6 +1555,70 @@ func sessionUsable(sess *session.Session) bool {
 
 // sessionDisplayName renders the GNU screen socket name form: auto-named
 // sessions are "pid.tty.host"; named sessions show as "pid.name".
+
+// resolveSessionTarget resolves a session name GNU-style: an exact ID
+// match first, then a unique prefix match. The "pid." component of
+// auto-generated IDs may be skipped, so both "be" and "12345.beta"
+// address the same session. It returns (session, candidates): when no
+// unique session resolves, candidates holds the prefix matches so the
+// caller can list them next to the GNU-style error message.
+func resolveSessionTarget(name string) (*session.Session, []*session.Session) {
+	if name == "" {
+		return nil, nil
+	}
+	if sess, err := session.Load(name); err == nil {
+		return sess, nil
+	}
+	var candidates []*session.Session
+	for _, sess := range session.List() {
+		if sess != nil && sessionNameMatches(sess, name) {
+			candidates = append(candidates, sess)
+		}
+	}
+	if len(candidates) == 1 {
+		return candidates[0], nil
+	}
+	return nil, candidates
+}
+
+// sessionNameMatches reports whether name addresses sess by prefix,
+// ignoring a leading all-digit pid component in the session ID.
+func sessionNameMatches(sess *session.Session, name string) bool {
+	if strings.HasPrefix(sess.ID, name) {
+		return true
+	}
+	if i := strings.Index(sess.ID, "."); i > 0 && isAllDigits(sess.ID[:i]) {
+		return strings.HasPrefix(sess.ID[i+1:], name)
+	}
+	return false
+}
+
+func isAllDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// printCandidateList lists sessions in the GNU style used when a target
+// name matches several (or one non-operable) session.
+func printCandidateList(candidates []*session.Session) {
+	switch len(candidates) {
+	case 0:
+		return
+	case 1:
+		fmt.Println("There is a screen on:")
+	default:
+		fmt.Println("There are screens on:")
+	}
+	printSessionList(candidates)
+}
+
 func sessionDisplayName(sess *session.Session) string {
 	pidPrefix := strconv.Itoa(sess.Pid) + "."
 	if strings.HasPrefix(sess.ID, pidPrefix) {
@@ -1643,6 +1749,16 @@ func resumableSessionCount(sessions []*session.Session) int {
 	return count
 }
 
+// clusteredBoolFlags are the single-dash flags that take no value and may
+// be bundled behind one dash, GNU getopt style (-Dm, -md, -Dx, ...).
+// Multi-letter flags (RR, ls, list, fn, fa, ln, dm, dmS, Logfile, ...) and
+// value-taking flags are never treated as clusters.
+var clusteredBoolFlags = map[byte]bool{
+	'd': true, 'D': true, 'm': true, 'x': true, 'q': true,
+	'a': true, 'A': true, 'U': true, 'i': true, 'v': true,
+	'l': true, 'L': true, 'O': true,
+}
+
 func normalizeArgs(args []string) []string {
 	normalized := make([]string, 0, len(args))
 	for _, arg := range args {
@@ -1651,13 +1767,29 @@ func normalizeArgs(args []string) []string {
 			normalized = append(normalized, "-d", "-m", "-S")
 		case strings.HasPrefix(arg, "-dmS") && len(arg) > 4:
 			normalized = append(normalized, "-d", "-m", "-S", arg[4:])
-		case arg == "-dm":
-			normalized = append(normalized, "-d", "-m")
+		case isClusteredBoolArg(arg):
+			for i := 1; i < len(arg); i++ {
+				normalized = append(normalized, "-"+string(arg[i]))
+			}
 		default:
 			normalized = append(normalized, arg)
 		}
 	}
 	return normalized
+}
+
+// isClusteredBoolArg reports whether arg is a "-xy..." bundle of known
+// boolean flags (length > 2 so plain "-d" stays untouched).
+func isClusteredBoolArg(arg string) bool {
+	if len(arg) <= 2 || arg[0] != '-' || arg[1] == '-' {
+		return false
+	}
+	for i := 1; i < len(arg); i++ {
+		if !clusteredBoolFlags[arg[i]] {
+			return false
+		}
+	}
+	return true
 }
 
 func requiresTerminalForOperation(reattach bool, reattachOrCreate bool, reattachOrCreateRR bool, multiuser bool, detach bool) bool {

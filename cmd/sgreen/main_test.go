@@ -33,11 +33,11 @@ func TestSelectReattachSession_NoSessionsWithName(t *testing.T) {
 
 func TestSelectReattachSession_NamedAttachedRequiresForce(t *testing.T) {
 	sess := &session.Session{ID: "demo", Pid: os.Getpid()}
-	loadByName := func(name string) (*session.Session, error) {
+	loadByName := func(name string) (*session.Session, []*session.Session, error) {
 		if name != "demo" {
-			return nil, errors.New("missing")
+			return nil, nil, errors.New("missing")
 		}
-		return sess, nil
+		return sess, nil, nil
 	}
 	isAttached := func(s *session.Session) bool {
 		return s == sess
@@ -70,7 +70,7 @@ func TestSelectReattachSession_UnnamedAttachedOnly(t *testing.T) {
 		[]*session.Session{sess},
 		"",
 		false,
-		func(string) (*session.Session, error) { return nil, errors.New("unused") },
+		func(string) (*session.Session, []*session.Session, error) { return nil, nil, errors.New("unused") },
 		isAttached,
 	)
 	if selected != nil {
@@ -92,7 +92,7 @@ func TestSelectReattachSession_MultiuserUnnamedMultiple(t *testing.T) {
 		[]*session.Session{s1, s2},
 		"",
 		true,
-		func(string) (*session.Session, error) { return nil, errors.New("unused") },
+		func(string) (*session.Session, []*session.Session, error) { return nil, nil, errors.New("unused") },
 		func(*session.Session) bool { return false },
 	)
 	if selected != nil {
@@ -115,7 +115,7 @@ func TestSelectReattachSession_OneDetached(t *testing.T) {
 		[]*session.Session{sess},
 		"",
 		false,
-		func(string) (*session.Session, error) { return nil, errors.New("unused") },
+		func(string) (*session.Session, []*session.Session, error) { return nil, nil, errors.New("unused") },
 		func(*session.Session) bool { return false },
 	)
 	if errMsg != "" || printList {

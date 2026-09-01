@@ -67,11 +67,17 @@ var (
 // HOME at process start, which made test isolation impossible).
 func dir() string {
 	sessionsOnce.Do(func() {
-		homeDir, err := os.UserHomeDir()
-		if err != nil {
-			homeDir = os.TempDir()
+		// GNU screen relocates its sockets via $SCREENDIR; honor it so the
+		// directory sgreen actually uses matches what -ls reports.
+		if screenDir := os.Getenv("SCREENDIR"); screenDir != "" {
+			sessionsDir = screenDir
+		} else {
+			homeDir, err := os.UserHomeDir()
+			if err != nil {
+				homeDir = os.TempDir()
+			}
+			sessionsDir = filepath.Join(homeDir, ".sgreen", "sessions")
 		}
-		sessionsDir = filepath.Join(homeDir, ".sgreen", "sessions")
 		if err := os.MkdirAll(sessionsDir, 0755); err != nil {
 			_, _ = fmt.Fprintf(os.Stderr, "warning: failed to create sessions directory: %v\n", err)
 		}
@@ -245,24 +251,6 @@ func Load(id string) (*Session, error) {
 	sessionsMu.Unlock()
 
 	return sess, nil
-}
-
-// ReconnectPTY attempts to reconnect to an existing PTY
-func (s *Session) ReconnectPTY() error {
-	if s.PtsPath == "" {
-		return fmt.Errorf("no PTY path available")
-	}
-
-	ptyProc, err := pty.Reconnect(s.PtsPath)
-	if err != nil {
-		return fmt.Errorf("failed to reconnect to PTY: %w", err)
-	}
-
-	s.mu.Lock()
-	s.PTYProcess = ptyProc
-	s.mu.Unlock()
-
-	return nil
 }
 
 // isProcessAlive checks if a process with the given PID is still running
@@ -535,78 +523,6 @@ func Delete(id string) error {
 	_ = os.Remove(SocketPath(id))
 
 	return nil
-}
-
-// CleanupOrphanedProcesses cleans up orphaned processes from dead sessions
-func CleanupOrphanedProcesses() error {
-	sessionsMu.Lock()
-	defer sessionsMu.Unlock()
-
-	// Get all sessions from disk
-	diskSessions, err := loadAllFromDisk()
-	if err != nil {
-		// If we can't read from disk, try to clean up from memory
-		for _, sess := range sessions {
-			cleanupSessionOrphans(sess)
-		}
-		return nil
-	}
-
-	// Check each session
-	for _, sess := range diskSessions {
-		// Check if session is in memory
-		if _, inMemory := sessions[sess.ID]; !inMemory {
-			// Session not in memory, check if processes are orphaned
-			hasAliveProcess := false
-
-			// Check windows
-			for _, win := range sess.Windows {
-				if win.PtsPath != "" && isProcessAlive(win.Pid) {
-					hasAliveProcess = true
-					// Try to kill orphaned process
-					if proc, err := os.FindProcess(win.Pid); err == nil {
-						_ = proc.Kill()
-					}
-				}
-			}
-
-			// Check legacy PTY
-			if sess.PtsPath != "" && isProcessAlive(sess.Pid) {
-				hasAliveProcess = true
-				if proc, err := os.FindProcess(sess.Pid); err == nil {
-					_ = proc.Kill()
-				}
-			}
-
-			// If no alive processes, remove session file
-			if !hasAliveProcess {
-				filePath := filepath.Join(dir(), sess.ID+".json")
-				_ = os.Remove(filePath)
-			}
-		}
-	}
-
-	return nil
-}
-
-// cleanupSessionOrphans cleans up orphaned processes for a session
-func cleanupSessionOrphans(sess *Session) {
-	// Clean up dead windows
-	for _, win := range sess.Windows {
-		if win.GetPTYProcess() != nil && !win.GetPTYProcess().IsAlive() {
-			// Process is dead, try to kill it anyway to be sure
-			if proc, err := os.FindProcess(win.Pid); err == nil {
-				_ = proc.Kill()
-			}
-		}
-	}
-
-	// Clean up legacy PTY
-	if sess.PTYProcess != nil && !sess.PTYProcess.IsAlive() {
-		if proc, err := os.FindProcess(sess.Pid); err == nil {
-			_ = proc.Kill()
-		}
-	}
 }
 
 // GetPTYProcess returns the PTY process for this session
@@ -945,16 +861,6 @@ func (s *Session) Rename(newID string) error {
 
 	// Save updated session
 	return s.save()
-}
-
-// ForceDetach forces a detach by clearing the PTY process reference
-// This allows the session to be reattached from another terminal
-func (s *Session) ForceDetach() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	// Clear the PTY process reference but keep the session alive
-	// The process continues running, we just lose the reference
-	s.PTYProcess = nil
 }
 
 // Save persists session to disk.

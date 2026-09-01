@@ -688,3 +688,80 @@ func TestShortHRequiresArgument(t *testing.T) {
 		t.Fatalf("sgreen -h: expected usage output\n%s", out)
 	}
 }
+
+// --- Session target resolution (GNU-style prefix matching) ---
+
+func TestSessionPrefixMatching(t *testing.T) {
+	homeDir := t.TempDir()
+	writeSessionFile(t, homeDir, "alpha", os.Getpid())
+	writeSessionFile(t, homeDir, "alex", os.Getpid())
+	writeSessionFile(t, homeDir, "beta", os.Getpid())
+
+	// Unique prefix resolves; GNU reports the candidate when it cannot
+	// detach (the synthetic sessions are detached).
+	out, code := runSgreen(t, []string{"-d", "alp"}, map[string]string{"HOME": homeDir})
+	if code != 1 {
+		t.Fatalf("sgreen -d alp: exit code %d, want 1\n%s", code, out)
+	}
+	if !strings.Contains(out, "There is a screen on:") ||
+		!strings.Contains(out, ".alpha") || strings.Contains(out, ".alex") {
+		t.Fatalf("sgreen -d alp should list only alpha:\n%s", out)
+	}
+	if !strings.Contains(out, "There is no screen to be detached matching alp.") {
+		t.Fatalf("sgreen -d alp missing GNU message:\n%s", out)
+	}
+
+	// Ambiguous prefix lists every candidate.
+	out, code = runSgreen(t, []string{"-d", "al"}, map[string]string{"HOME": homeDir})
+	if code != 1 {
+		t.Fatalf("sgreen -d al: exit code %d, want 1\n%s", code, out)
+	}
+	if !strings.Contains(out, "There are screens on:") ||
+		!strings.Contains(out, ".alpha") || !strings.Contains(out, ".alex") {
+		t.Fatalf("sgreen -d al should list alpha and alex:\n%s", out)
+	}
+	if !strings.Contains(out, "There is no screen to be detached matching al.") {
+		t.Fatalf("sgreen -d al missing GNU message:\n%s", out)
+	}
+
+	// No match: plain GNU failure message.
+	out, code = runSgreen(t, []string{"-d", "zzz"}, map[string]string{"HOME": homeDir})
+	if code != 1 || !strings.Contains(out, "There is no screen to be detached matching zzz.") {
+		t.Fatalf("sgreen -d zzz mismatch: code=%d\n%s", code, out)
+	}
+}
+
+func TestListOrdersNewestFirst(t *testing.T) {
+	homeDir := t.TempDir()
+	writeSessionFile(t, homeDir, "older", os.Getpid())
+	// Give the second file a newer mtime and a newer created_at.
+	sessionsDir := filepath.Join(homeDir, ".sgreen", "sessions")
+	newer := filepath.Join(sessionsDir, "newer.json")
+	if err := os.WriteFile(newer, []byte(fmt.Sprintf(`{"id":"newer","pid":%d,"created_at":"2099-01-01T00:00:00Z"}`, os.Getpid())), 0o644); err != nil {
+		t.Fatalf("write newer.json: %v", err)
+	}
+
+	out, code := runSgreen(t, []string{"-ls"}, map[string]string{"HOME": homeDir})
+	if code != 0 {
+		t.Fatalf("sgreen -ls: exit code %d, want 0\n%s", code, out)
+	}
+	if strings.Index(out, ".newer") > strings.Index(out, ".older") {
+		t.Fatalf("sgreen -ls should list newest first:\n%s", out)
+	}
+}
+
+// --- Clustered boolean flags ---
+
+func TestClusteredBoolFlags(t *testing.T) {
+	// -Dm expands to -D -m (detached no-fork create); a fast-exiting
+	// command must succeed and leave no session behind.
+	homeDir := t.TempDir()
+	out, code := runSgreen(t, []string{"-Dm", "-S", "clu", "/bin/sh", "-c", "exit 0"}, map[string]string{"HOME": homeDir})
+	if code != 0 {
+		t.Fatalf("sgreen -Dm -S clu: exit code %d, want 0\n%s", code, out)
+	}
+	out, _ = runSgreen(t, []string{"-ls"}, map[string]string{"HOME": homeDir})
+	if strings.Contains(out, "clu") {
+		t.Fatalf("session should be gone after command exit:\n%s", out)
+	}
+}
