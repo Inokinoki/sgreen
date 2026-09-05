@@ -10,7 +10,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/inoki/sgreen/internal/daemon"
@@ -1321,6 +1320,12 @@ func runAttachUI(sess *session.Session, config *Config, onDetach func(*session.S
 // attach connections, tracks the attached flag in the session file, and
 // tears everything down when the session program exits.
 func startSessionDaemon(sess *session.Session) {
+	// Platform without daemon support must not fork: the child re-runs
+	// main() (RunFromEnv is a stub there), would create another session
+	// and fork again - a process fork bomb.
+	if !daemon.Supported() {
+		return
+	}
 	if sess == nil {
 		return
 	}
@@ -1892,21 +1897,6 @@ func findAttachedSessions(sessions []*session.Session) []*session.Session {
 		}
 	}
 	return attached
-}
-
-// isProcessAliveByPID checks if a process is alive by PID
-func isProcessAliveByPID(pid int) bool {
-	// If PID is the current process, it's definitely alive
-	if pid == os.Getpid() {
-		return true
-	}
-
-	process, err := os.FindProcess(pid)
-	if err != nil {
-		return false
-	}
-	err = process.Signal(syscall.Signal(0))
-	return err == nil
 }
 
 func ensureInteractiveShellArgs(cmdPath string, args []string) []string {

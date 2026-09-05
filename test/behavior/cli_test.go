@@ -115,6 +115,9 @@ func runSgreen(tb testing.TB, args []string, extraEnv map[string]string) (output
 
 func runSgreenWithPTY(tb testing.TB, args []string, extraEnv map[string]string) (output string, exitCode int) {
 	tb.Helper()
+	if runtime.GOOS == "windows" {
+		tb.Skip("PTY-backed scenarios need script(1) and /bin/sh; not available on Windows")
+	}
 	baseCmd := sgreenCmd(tb, args)
 	homeDir := tb.TempDir()
 	env := os.Environ()
@@ -337,6 +340,9 @@ func TestPowerDetachNamedSessionNoSessions(t *testing.T) {
 }
 
 func TestPowerDetachNamedSessionWithCommandNoSessions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("needs /bin/sh")
+	}
 	out, code := runSgreen(t, []string{"-D", "nosuch", "/bin/sh", "-c", "echo hi"}, nil)
 	if code == 0 {
 		t.Fatalf("sgreen -D nosuch /bin/sh -c 'echo hi': exit code 0, want non-zero when no sessions\n%s", out)
@@ -351,6 +357,9 @@ func TestPowerDetachNamedSessionWithCommandNoSessions(t *testing.T) {
 }
 
 func TestPowerDetachNoForkDetachedStart(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("needs /bin/sh")
+	}
 	out, code := runSgreen(t, []string{"-D", "-m", "-S", "dmcase", "/bin/sh", "-c", "exit 0"}, nil)
 	if code != 0 {
 		t.Fatalf("sgreen -D -m -S dmcase /bin/sh -c 'exit 0': exit code %d, want 0\n%s", code, out)
@@ -668,6 +677,9 @@ func TestListSingleSessionShowsScreenStyleSummary(t *testing.T) {
 }
 
 func TestDetachedCreateDmSParses(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("needs /bin/sh")
+	}
 	out, code := runSgreen(t, []string{"-dmS", "demo", "/bin/sh", "-c", "sleep 1"}, nil)
 	if code != 0 {
 		t.Fatalf("sgreen -dmS demo ...: exit code %d, want 0\n%s", code, out)
@@ -756,6 +768,9 @@ func TestClusteredBoolFlags(t *testing.T) {
 	// -Dm expands to -D -m (detached no-fork create); a fast-exiting
 	// command must succeed and leave no session behind.
 	homeDir := t.TempDir()
+	if runtime.GOOS == "windows" {
+		t.Skip("needs /bin/sh")
+	}
 	out, code := runSgreen(t, []string{"-Dm", "-S", "clu", "/bin/sh", "-c", "exit 0"}, map[string]string{"HOME": homeDir})
 	if code != 0 {
 		t.Fatalf("sgreen -Dm -S clu: exit code %d, want 0\n%s", code, out)

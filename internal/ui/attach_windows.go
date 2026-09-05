@@ -82,6 +82,36 @@ func attachLoopWindows(in *os.File, out *os.File, errOut *os.File, sess *session
 	// Create scrollback buffers for windows (stored in a map)
 	scrollbackBuffers := make(map[int]*ScrollbackBuffer)
 
+	// The input pipeline is created once for the whole attach: a single
+	// reader goroutine owns stdin (per-iteration readers would steal each
+	// other's bytes after a window switch) and writes to a switchable
+	// target that always points at the current window's PTY.
+	detachReader := newDetachReaderWithConfig(in, config)
+	inputTarget := &switchWriter{}
+	inputDone := make(chan error, 4)
+	go func() {
+		buf := make([]byte, 32*1024)
+		for {
+			n, err := detachReader.Read(buf)
+			if n > 0 {
+				if _, werr := inputTarget.Write(buf[:n]); werr != nil {
+					inputDone <- werr
+					return
+				}
+			}
+			if err != nil {
+				var winCmd *ErrWindowCommand
+				if errors.As(err, &winCmd) {
+					inputTarget.Set(io.Discard)
+					inputDone <- err
+					continue
+				}
+				inputDone <- err
+				return
+			}
+		}
+	}()
+
 	for {
 		// Get current window
 		win := sess.GetCurrentWindow()
@@ -147,15 +177,8 @@ func attachLoopWindows(in *os.File, out *os.File, errOut *os.File, sess *session
 			outputDone <- copyWithFlowControl(ptyProc.Pty, scrollbackWriter, flowControl)
 		}()
 
-		// Create a reader that detects detach sequence and window commands
-		detachReader := newDetachReaderWithConfig(in, config)
-
-		// Copy from input to PTY, with detach detection and window commands
-		inputDone := make(chan error, 1)
-		go func() {
-			_, err := io.Copy(ptyProc.Pty, detachReader)
-			inputDone <- err
-		}()
+		// Route user input to this window's PTY.
+		inputTarget.Set(ptyProc.Pty)
 
 		// Wait for either input or output to finish
 		select {
@@ -519,6 +542,7 @@ func (dr *detachReader) Read(p []byte) (n int, err error) {
 		switch b {
 		case 'd':
 			// Detach sequence detected
+			dr.state = 0
 			return 0, ErrDetach
 		case dr.literalChar:
 			// Literal command char - send the command char to the program
@@ -527,18 +551,23 @@ func (dr *detachReader) Read(p []byte) (n int, err error) {
 			return 1, nil
 		case dr.commandChar:
 			// C-a C-a: Toggle to last window
+			dr.state = 0
 			return 0, &ErrWindowCommand{Command: "toggle"}
 		case 'c':
 			// Create new window
+			dr.state = 0
 			return 0, &ErrWindowCommand{Command: "create"}
 		case 'n':
 			// Next window
+			dr.state = 0
 			return 0, &ErrWindowCommand{Command: "next"}
 		case 'p':
 			// Previous window
+			dr.state = 0
 			return 0, &ErrWindowCommand{Command: "prev"}
 		case 'k':
 			// Kill current window
+			dr.state = 0
 			return 0, &ErrWindowCommand{Command: "kill"}
 		case 'A':
 			// Set window title - need to read title
