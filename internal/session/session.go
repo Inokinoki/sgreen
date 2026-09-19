@@ -159,8 +159,10 @@ func NewWithConfig(id, cmdPath string, args []string, config *Config) (*Session,
 		envOverrides["TERM"] = "screen"
 	}
 
-	// Start PTY process with environment overrides
-	ptyProc, err := pty.StartWithEnv(cmdPath, args, envOverrides)
+	// Start PTY process with environment overrides. On Windows this
+	// returns nil, nil: no fd inheritance exists there, so the session
+	// daemon (forked next) starts the program itself.
+	ptyProc, err := startSessionPTY(cmdPath, args, envOverrides)
 	if err != nil {
 		return nil, fmt.Errorf("failed to start PTY: %w", err)
 	}
@@ -183,14 +185,20 @@ func NewWithConfig(id, cmdPath string, args []string, config *Config) (*Session,
 	if config != nil && config.Scrollback > 0 {
 		scrollbackSize = config.Scrollback
 	}
+	windowPid := 0
+	windowPts := ""
+	if ptyProc != nil && ptyProc.Cmd != nil && ptyProc.Cmd.Process != nil {
+		windowPid = ptyProc.Cmd.Process.Pid
+		windowPts = ptyProc.PtsPath
+	}
 	window := &Window{
 		ID:             0,
 		Number:         "0",
 		Title:          "",
 		CmdPath:        cmdPath,
 		CmdArgs:        args,
-		Pid:            ptyProc.Cmd.Process.Pid,
-		PtsPath:        ptyProc.PtsPath,
+		Pid:            windowPid,
+		PtsPath:        windowPts,
 		CreatedAt:      time.Now(),
 		ScrollbackSize: scrollbackSize,
 		Encoding:       encoding,
@@ -202,8 +210,8 @@ func NewWithConfig(id, cmdPath string, args []string, config *Config) (*Session,
 		ID:            id,
 		CmdPath:       cmdPath,
 		CmdArgs:       args,
-		Pid:           ptyProc.Cmd.Process.Pid,
-		PtsPath:       ptyProc.PtsPath, // Store PTY path for reconnection (backward compat)
+		Pid:           windowPid,
+		PtsPath:       windowPts,
 		CreatedAt:     time.Now(),
 		Owner:         CurrentUser(),
 		Windows:       []*Window{window},
@@ -219,7 +227,9 @@ func NewWithConfig(id, cmdPath string, args []string, config *Config) (*Session,
 	if err := sess.save(); err != nil {
 		// Clean up on error
 		delete(sessions, id)
-		_ = ptyProc.Kill()
+		if ptyProc != nil {
+			_ = ptyProc.Kill()
+		}
 		return nil, fmt.Errorf("failed to save session: %w", err)
 	}
 

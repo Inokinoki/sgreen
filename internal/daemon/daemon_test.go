@@ -87,7 +87,7 @@ func newDaemonFixture(t *testing.T) *daemonFixture {
 		_ = os.Remove(sessFile)
 	})
 
-	go Run(proc.Pty, sessFile, sessID, sockPath, proc.Cmd.Process.Pid, nil)
+	go Run(proc, sessFile, sessID, sockPath, proc.Cmd.Process.Pid, nil)
 
 	// Wait for the daemon to listen.
 	deadline := time.Now().Add(3 * time.Second)

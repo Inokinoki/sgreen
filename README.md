@@ -20,6 +20,20 @@ A simplified, screen-like terminal multiplexer written in Go, with CLI behavior 
   - FreeBSD (amd64, arm64)
   - Android (arm64)
 
+## Platform support
+
+| Capability | Linux | macOS | Windows |
+|---|---|---|---|
+| Session daemon, cross-process attach/detach | ✅ | ✅ | ✅ (ConPTY, loopback TCP transport) |
+| Multi-window sessions surviving detach | ✅ | ✅ | ✅ |
+| `-d`/`-D`/`-X` remote operations | ✅ | ✅ | ✅ |
+| GNU-style exit codes / messages | ✅ | ✅ | ✅ (compared against GNU screen on Unix) |
+| SIGWINCH-driven resize while attached | ✅ | ✅ | console-size events not signal-based (best effort) |
+
+Windows uses ConPTY (`CreatePseudoConsole`, Windows 10 1809+) and a
+loopback-TCP session transport with a shared-secret handshake, because
+Unix sockets and fd inheritance do not exist there.
+
 ## Requirements
 
 - Go 1.24 or later

@@ -1,23 +1,22 @@
-//go:build !windows
-// +build !windows
-
 // Package daemon implements the per-session relay daemon.
 //
 // A session daemon is forked when a session is created. It owns the PTY
-// master of every window in the session: the initial master is handed over
-// by the creating process, and later windows (C-a c) are spawned inside the
-// daemon itself. Clients attach through a Unix socket and relay data for
-// one window per ATTACH connection; window lifecycle operations (create,
-// switch, kill, retitle) arrive as control commands so the daemon's session
-// file stays authoritative. This mirrors the GNU screen model, where a
-// resident screen process owns the session and clients talk to it through
-// a socket.
+// master of every window in the session: on Unix the initial master is
+// handed over by the creating process and later windows (C-a c) are
+// spawned inside the daemon; on Windows the daemon bootstraps even the
+// initial program itself (no fd inheritance exists there). Clients attach
+// through a transport (Unix socket / loopback TCP) and relay data for one
+// window per ATTACH connection; window lifecycle operations arrive as
+// control commands so the daemon's session file stays authoritative. This
+// mirrors the GNU screen model, where a resident screen process owns the
+// session and clients talk to it through a socket.
 package daemon
 
 import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
@@ -31,16 +30,6 @@ import (
 	"github.com/inoki/sgreen/internal/session"
 )
 
-const (
-	// maxProtocolLine bounds control-line length so a bogus client cannot
-	// grow memory unbounded.
-	maxProtocolLine = 512
-)
-
-// exitFunc is os.Exit, replaceable in tests so a session ending inside the
-// test process does not kill the test binary.
-var exitFunc = os.Exit
-
 // Supported reports whether session daemons are available on this platform.
 func Supported() bool { return true }
 
@@ -51,27 +40,23 @@ func RunFromEnv() bool {
 		return false
 	}
 
-	fd, err := strconv.Atoi(os.Getenv("SGREEN_HOLD_FD"))
-	if err != nil || fd <= 0 {
-		log.Printf("sgreen-daemon: invalid SGREEN_HOLD_FD=%q", os.Getenv("SGREEN_HOLD_FD"))
-		return true
-	}
-	master := os.NewFile(uintptr(fd), "sgreen-pty-master")
-	if master == nil {
-		log.Printf("sgreen-daemon: failed to open master fd=%d", fd)
-		return true
-	}
-
-	sessionFile := os.Getenv("SGREEN_SESSION_FILE")
-	sessionID := os.Getenv("SGREEN_SESSION_ID")
-	socketPath := os.Getenv("SGREEN_SESSION_SOCK")
-
 	if logPath := os.Getenv("SGREEN_DAEMON_LOG"); logPath != "" {
 		if f, logErr := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644); logErr == nil {
 			log.SetOutput(f)
 		}
 	}
+
+	sessionFile := os.Getenv("SGREEN_SESSION_FILE")
+	sessionID := os.Getenv("SGREEN_SESSION_ID")
+	socketPath := os.Getenv("SGREEN_SESSION_SOCK")
 	log.Printf("sgreen-daemon: forked file=%q id=%q sock=%q", sessionFile, sessionID, socketPath)
+
+	initial, err := initialPTYFromEnv()
+	if err != nil {
+		log.Printf("sgreen-daemon: initial window: %v", err)
+		return true
+	}
+
 	sessionPid := 0
 	if v := os.Getenv("SGREEN_SESSION_PID"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
@@ -84,15 +69,30 @@ func RunFromEnv() bool {
 		ready = os.NewFile(uintptr(readyFD), "sgreen-daemon-ready")
 	}
 
-	Run(master, sessionFile, sessionID, socketPath, sessionPid, ready)
+	Run(initial, sessionFile, sessionID, socketPath, sessionPid, ready)
 	return true
 }
+
+// masterConn is a window's PTY master endpoint: bidirectional relay plus
+// resize. On Unix it wraps the master fd; on Windows the two ConPTY pipes.
+type masterConn interface {
+	io.ReadWriteCloser
+	Resize(rows, cols uint16) error
+}
+
+// ptyMaster adapts a *pty.PTYProcess into a masterConn.
+type ptyMaster struct{ proc *pty.PTYProcess }
+
+func (m ptyMaster) Read(p []byte) (int, error)     { return m.proc.DataConn().Read(p) }
+func (m ptyMaster) Write(p []byte) (int, error)    { return m.proc.DataConn().Write(p) }
+func (m ptyMaster) Close() error                   { return m.proc.DataConn().Close() }
+func (m ptyMaster) Resize(rows, cols uint16) error { return m.proc.SetSize(rows, cols) }
 
 // winState is one daemon-owned window: its PTY master and the data
 // connections currently relaying for it.
 type winState struct {
 	id        int
-	master    *os.File
+	master    masterConn
 	attachers map[net.Conn]struct{}
 }
 
@@ -135,9 +135,11 @@ func (st *state) saveLocked() {
 }
 
 // Run serves a session until its last window exits or QUIT is received.
-// Run never returns normally except on listen failure; all other exits go
-// through cleanup + os.Exit.
-func Run(master *os.File, sessionFile, sessionID, socketPath string, sessionPid int, ready *os.File) {
+// initial may be nil (Windows bootstrap): the daemon then starts the
+// initial program from SGREEN_SESSION_* environment. Run never returns
+// normally except on listen failure; all other exits go through cleanup +
+// os.Exit.
+func Run(initial *pty.PTYProcess, sessionFile, sessionID, socketPath string, sessionPid int, ready *os.File) {
 	logger := log.New(log.Writer(), "sgreen-daemon: ", log.LstdFlags)
 
 	// Load the session file the creating process wrote, then take ownership
@@ -151,19 +153,43 @@ func Run(master *os.File, sessionFile, sessionID, socketPath string, sessionPid 
 			sess.ID, sess.DaemonPid, sess.Attached, len(sess.Windows))
 	}
 
-	initialWin := &winState{
-		id:        sess.CurrentWindow,
-		master:    master,
-		attachers: make(map[net.Conn]struct{}),
-	}
 	st := &state{
-		windows:    map[int]*winState{initialWin.id: initialWin},
+		windows:    map[int]*winState{},
 		sessionObj: sess,
 		endSession: func() {},
 	}
 
-	_ = os.Remove(socketPath)
-	ln, err := net.Listen("unix", socketPath)
+	// Bootstrap mode: no PTY was handed over, so the daemon starts the
+	// initial program itself from the environment.
+	if initial == nil {
+		env := map[string]string{"TERM": "screen"}
+		if t := os.Getenv("SGREEN_SESSION_TERM"); t != "" && t != "-" {
+			env["TERM"] = t
+		}
+		proc, err := pty.StartWithEnv(
+			os.Getenv("SGREEN_SESSION_CMD"),
+			envStringSlice(os.Getenv("SGREEN_SESSION_ARGS")),
+			env)
+		if err != nil {
+			logger.Printf("bootstrap window: %v", err)
+			signalReady(ready)
+			return
+		}
+		initial = proc
+		if win := sess.GetCurrentWindow(); win != nil {
+			win.Pid = proc.Cmd.Process.Pid
+		}
+		sess.Pid = proc.Cmd.Process.Pid
+	}
+
+	initialWin := &winState{
+		id:        sess.CurrentWindow,
+		master:    ptyMaster{proc: initial},
+		attachers: make(map[net.Conn]struct{}),
+	}
+	st.windows[initialWin.id] = initialWin
+
+	ln, authSecret, err := listenTransport(socketPath)
 	if err != nil {
 		logger.Printf("failed to listen on %s: %v", socketPath, err)
 		// The parent is waiting on the ready pipe; unblock it so it can
@@ -192,7 +218,6 @@ func Run(master *os.File, sessionFile, sessionID, socketPath string, sessionPid 
 			if err := session.RemoveFile(sessionFile, sessionID); err != nil {
 				logger.Printf("cleanup: remove session file: %v", err)
 			}
-			_ = master.Close()
 			if sessionPid > 0 {
 				killPid(sessionPid)
 			}
@@ -234,9 +259,39 @@ func Run(master *os.File, sessionFile, sessionID, socketPath string, sessionPid 
 			// process before cleanup removed the session files.
 			select {}
 		}
-		go handleConn(conn, st, logger, cleanup)
+		go handleConn(authenticate(conn, authSecret), st, logger, cleanup)
 	}
 }
+
+// authenticate validates the AUTH <token> handshake line required by
+// transports that are reachable beyond filesystem permissions (Windows
+// loopback TCP). Unix sockets skip it (empty secret).
+func authenticate(conn net.Conn, secret string) net.Conn {
+	if secret == "" {
+		return conn
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	line, err := readLine(conn)
+	_ = conn.SetReadDeadline(time.Time{})
+	if err != nil || strings.TrimSpace(line) != "AUTH "+secret {
+		_, _ = conn.Write([]byte("ERR auth\n"))
+		_ = conn.Close()
+		return deadConn{}
+	}
+	return conn
+}
+
+// deadConn swallows I/O on a rejected connection.
+type deadConn struct{}
+
+func (deadConn) Read([]byte) (int, error)         { return 0, io.EOF }
+func (deadConn) Write(p []byte) (int, error)      { return len(p), nil }
+func (deadConn) Close() error                     { return nil }
+func (deadConn) SetDeadline(time.Time) error      { return nil }
+func (deadConn) SetReadDeadline(time.Time) error  { return nil }
+func (deadConn) SetWriteDeadline(time.Time) error { return nil }
+func (deadConn) LocalAddr() net.Addr              { return nil }
+func (deadConn) RemoteAddr() net.Addr             { return nil }
 
 // startWindowRelay spawns the relay goroutine for a window; when the
 // window's program exits (master read ends) the window is removed, and the
@@ -412,26 +467,6 @@ func handleConn(conn net.Conn, st *state, logger *log.Logger, onQuit func()) {
 	}
 }
 
-// readLine reads a newline-terminated line byte by byte so no raw payload
-// following the handshake line is consumed from the socket buffer.
-func readLine(conn net.Conn) (string, error) {
-	var b strings.Builder
-	one := make([]byte, 1)
-	for b.Len() < maxProtocolLine {
-		_, err := conn.Read(one)
-		if err != nil {
-			return "", err
-		}
-		if one[0] == '\n' {
-			return b.String(), nil
-		}
-		if one[0] != '\r' {
-			b.WriteByte(one[0])
-		}
-	}
-	return b.String(), nil
-}
-
 // serveAttach relays one attached client for one window until the
 // connection closes.
 func serveAttach(conn net.Conn, st *state, logger *log.Logger, args []string) {
@@ -530,7 +565,7 @@ func serveControl(conn net.Conn, st *state, logger *log.Logger, onQuit func()) {
 				_, _ = conn.Write([]byte("ERR no such window\n"))
 				continue
 			}
-			if err := setMasterSize(w.master, uint16(rows), uint16(cols)); err != nil {
+			if err := w.master.Resize(uint16(rows), uint16(cols)); err != nil {
 				_, _ = fmt.Fprintf(conn, "ERR %v\n", err)
 				continue
 			}
@@ -698,7 +733,7 @@ func createWindowInDaemon(st *state, b64Cmd, b64Args, term string, logger *log.L
 	newID := len(st.sessionObj.Windows)
 	w := &winState{
 		id:        newID,
-		master:    ptyProc.Pty,
+		master:    ptyMaster{proc: ptyProc},
 		attachers: make(map[net.Conn]struct{}),
 	}
 	st.windows[newID] = w
@@ -796,4 +831,20 @@ func kickAttachers(st *state) {
 		_ = conn.Close()
 	}
 	st.updateSession()
+}
+
+// exitFunc is os.Exit, replaceable in tests so a session ending inside the
+// test process does not kill the test binary.
+var exitFunc = os.Exit
+
+// envStringSlice decodes a JSON string slice from an environment variable.
+func envStringSlice(v string) []string {
+	if v == "" {
+		return nil
+	}
+	var out []string
+	if err := json.Unmarshal([]byte(v), &out); err != nil {
+		return nil
+	}
+	return out
 }

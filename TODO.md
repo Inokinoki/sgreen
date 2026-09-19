@@ -367,6 +367,10 @@ This document tracks features from GNU screen's `man screen` that need to be imp
 - ❌ Performance tests
 - ❌ Cross-platform testing
 
+### Platform
+- ✅ Windows: ConPTY backend (internal/pty/conpty_windows.go), session daemon over loopback TCP + token handshake (internal/daemon/transport_windows.go), tree kill via taskkill; same CLI surface as Unix
+- 🟡 Windows attached resize: console size events are not signal-based; resize on window switch works, live-follow does not
+
 ### Compatibility
 - ✅ Exit-code parity verified against live GNU screen (-v/-help exit 0; -q -ls/-wipe exit 9/10/11+n; -ls/-r/-d/-D/-X error exits)
 - ✅ Output parity: "There is a screen on:"/"N Sockets in", "[pid.name detached.]", "No Sockets found in ...", dead-session listing + "Remove dead screens with 'screen -wipe'."

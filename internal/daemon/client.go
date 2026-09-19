@@ -1,6 +1,3 @@
-//go:build !windows
-// +build !windows
-
 package daemon
 
 import (
@@ -19,7 +16,7 @@ import (
 
 // connectControl opens a short-lived control connection to a session daemon.
 func connectControl(socketPath string) (net.Conn, error) {
-	conn, err := net.DialTimeout("unix", socketPath, 2*time.Second)
+	conn, err := dialTransport(socketPath)
 	if err != nil {
 		return nil, err
 	}
@@ -138,7 +135,7 @@ func SendResizeWindow(socketPath string, winID int, rows, cols uint16) error {
 // OpenAttach opens an ATTACH data connection for one window and performs
 // the handshake. The returned connection carries raw PTY data.
 func OpenAttach(socketPath string, winID int) (net.Conn, error) {
-	conn, err := net.DialTimeout("unix", socketPath, 2*time.Second)
+	conn, err := dialTransport(socketPath)
 	if err != nil {
 		return nil, err
 	}

@@ -1,12 +1,14 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -1336,8 +1338,13 @@ func startSessionDaemon(sess *session.Session) {
 		}
 	}
 	if ptyProc == nil || ptyProc.Pty == nil {
-		debugDetachKeeper("daemon: no PTY to hold for session %q", sess.ID)
-		return
+		if runtime.GOOS != "windows" {
+			debugDetachKeeper("daemon: no PTY to hold for session %q", sess.ID)
+			return
+		}
+		// Windows: no PTY exists yet; the daemon bootstraps the program
+		// from the environment, so keep going without one.
+		ptyProc = nil
 	}
 
 	selfPath, err := os.Executable()
@@ -1357,15 +1364,30 @@ func startSessionDaemon(sess *session.Session) {
 	if win := sess.GetCurrentWindow(); win != nil && win.Pid > 0 {
 		sessionPid = win.Pid
 	}
-	cmd.Env = append(os.Environ(),
+
+	env := append(os.Environ(),
 		"SGREEN_SESSION_DAEMON=1",
-		"SGREEN_HOLD_FD=3",
-		"SGREEN_READY_FD=4",
 		"SGREEN_SESSION_ID="+sess.ID,
 		"SGREEN_SESSION_FILE="+session.FilePath(sess.ID),
 		"SGREEN_SESSION_SOCK="+session.SocketPath(sess.ID),
-		"SGREEN_SESSION_PID="+strconv.Itoa(sessionPid),
 	)
+	if runtime.GOOS != "windows" {
+		env = append(env,
+			"SGREEN_HOLD_FD=3",
+			"SGREEN_READY_FD=4",
+			"SGREEN_SESSION_PID="+strconv.Itoa(sessionPid),
+		)
+	} else {
+		// No fd handover on Windows: the daemon bootstraps the program
+		// from these variables instead.
+		argsJSON, _ := json.Marshal(cmdArgsOf(sess))
+		env = append(env,
+			"SGREEN_SESSION_CMD="+sess.CmdPath,
+			"SGREEN_SESSION_ARGS="+string(argsJSON),
+			"SGREEN_SESSION_TERM="+os.Getenv("SGREEN_SESSION_TERM"),
+		)
+	}
+	cmd.Env = env
 	cmd.Stdin = nil
 	cmd.Stdout = nil
 	cmd.Stderr = nil
@@ -1374,7 +1396,9 @@ func startSessionDaemon(sess *session.Session) {
 			cmd.Stderr = f
 		}
 	}
-	cmd.ExtraFiles = []*os.File{ptyProc.Pty, readyW}
+	if runtime.GOOS != "windows" {
+		cmd.ExtraFiles = []*os.File{ptyProc.Pty, readyW}
+	}
 	setDetachSysProcAttr(cmd)
 	if err := cmd.Start(); err != nil {
 		debugDetachKeeper("daemon: failed to start: %v", err)
@@ -1382,7 +1406,11 @@ func startSessionDaemon(sess *session.Session) {
 		return
 	}
 	_ = readyW.Close()
-	waitForKeeperReady(readyR)
+	if runtime.GOOS != "windows" {
+		waitForKeeperReady(readyR)
+	} else {
+		waitForSocket(session.SocketPath(sess.ID), 3*time.Second)
+	}
 	sess.DaemonPid = cmd.Process.Pid
 	debugDetachKeeper("daemon: started pid=%d for session %q", cmd.Process.Pid, sess.ID)
 	// This process keeps its local master fd as a fallback (used when the
@@ -1395,6 +1423,27 @@ func debugDetachKeeper(format string, args ...any) {
 		return
 	}
 	_, _ = fmt.Fprintf(os.Stderr, format+"\n", args)
+}
+
+// cmdArgsOf returns the session command arguments for the daemon
+// bootstrap environment.
+func cmdArgsOf(sess *session.Session) []string {
+	if len(sess.CmdArgs) == 0 {
+		return nil
+	}
+	return sess.CmdArgs
+}
+
+// waitForSocket blocks until the daemon's endpoint file exists (Windows
+// bootstrap readiness; ExtraFiles do not exist there).
+func waitForSocket(path string, timeout time.Duration) {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 }
 
 func waitForKeeperReady(readyR *os.File) {

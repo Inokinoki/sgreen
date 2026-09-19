@@ -1,6 +1,3 @@
-//go:build !windows
-// +build !windows
-
 package ui
 
 import (
@@ -14,7 +11,6 @@ import (
 	"sync"
 	"time"
 
-	"golang.org/x/sys/unix"
 	"golang.org/x/term"
 
 	"github.com/inoki/sgreen/internal/pty"
@@ -99,19 +95,19 @@ func AttachWithConfig(in *os.File, out *os.File, errOut *os.File, sess *session.
 // attachLoop is the main loop that handles window switching
 func attachLoop(in *os.File, out *os.File, errOut *os.File, sess *session.Session, config *AttachConfig) error {
 	debugAttach("attach: start session=%q", sess.ID)
-	// Handle window size changes (Unix only)
+	// Handle window size changes
 	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, unix.SIGWINCH)
+	notifyResizeSignals(sigChan)
 	defer signal.Stop(sigChan)
 
-	// Handle SIGHUP for autodetach on hangup
+	// Handle hangup for autodetach on terminal loss
 	hupChan := make(chan os.Signal, 1)
-	signal.Notify(hupChan, unix.SIGHUP)
+	notifyHangupSignals(hupChan)
 	defer signal.Stop(hupChan)
 
 	// Handle SIGTERM and SIGINT for graceful shutdown
 	termChan := make(chan os.Signal, 1)
-	signal.Notify(termChan, unix.SIGTERM, unix.SIGINT)
+	notifyTermSignals(termChan)
 	defer signal.Stop(termChan)
 
 	// Create scrollback buffers for windows (stored in a map)
@@ -1312,12 +1308,7 @@ func lockScreen(in, out *os.File) error {
 
 // suspendScreen suspends the screen process
 func suspendScreen() error {
-	// Send SIGTSTP to self
-	proc, err := os.FindProcess(os.Getpid())
-	if err != nil {
-		return err
-	}
-	return proc.Signal(unix.SIGTSTP)
+	return suspendSelf()
 }
 
 // killAllWindows kills all windows and terminates the session
