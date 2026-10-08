@@ -102,6 +102,12 @@ func runSgreen(tb testing.TB, args []string, extraEnv map[string]string) (output
 	for k, v := range extraEnv {
 		env = setEnv(env, k, v)
 	}
+	// When a test overrides HOME (e.g. with synthetic session files),
+	// USERPROFILE must follow: os.UserHomeDir reads it on Windows and a
+	// stale value would point the binary at an empty directory.
+	if extraEnv["HOME"] != "" && extraEnv["USERPROFILE"] == "" {
+		env = setEnv(env, "USERPROFILE", extraEnv["HOME"])
+	}
 	cmd.Env = env
 
 	out, err := cmd.CombinedOutput()
