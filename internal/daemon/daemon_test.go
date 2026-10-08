@@ -47,7 +47,14 @@ func newDaemonFixture(t *testing.T) *daemonFixture {
 
 	sessID := "proto-test"
 	sessFile := filepath.Join(sessDir, sessID+".json")
-	sockPath := filepath.Join(sessDir, sessID+".sock")
+	// The socket lives in a short TMPDIR-based path: macOS caps unix
+	// socket paths at 104 bytes and the sessions dir under a macOS
+	// TempDir already exceeds that (CI failures: bind: invalid argument).
+	sockDir, err := os.MkdirTemp("", "sgd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sockPath := filepath.Join(sockDir, "s.sock")
 	body := map[string]any{
 		"id": sessID, "cmd_path": "cat", "pid": proc.Cmd.Process.Pid,
 		"created_at": "2026-01-01T00:00:00Z",
@@ -73,6 +80,7 @@ func newDaemonFixture(t *testing.T) *daemonFixture {
 		f.mu.Unlock()
 	}
 	t.Cleanup(func() {
+		_ = os.RemoveAll(sockDir)
 		_ = proc.Kill()
 		_ = proc.Pty.Close()
 		// Wait for the daemon's async teardown (its endSession path calls

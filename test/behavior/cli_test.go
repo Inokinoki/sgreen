@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 var (
@@ -775,8 +776,17 @@ func TestClusteredBoolFlags(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("sgreen -Dm -S clu: exit code %d, want 0\n%s", code, out)
 	}
-	out, _ = runSgreen(t, []string{"-ls"}, map[string]string{"HOME": homeDir})
-	if strings.Contains(out, "clu") {
-		t.Fatalf("session should be gone after command exit:\n%s", out)
+	// The daemon tears the session down asynchronously after the program
+	// exits; poll instead of asserting immediately (flaky on slow CI).
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		out, _ = runSgreen(t, []string{"-ls"}, map[string]string{"HOME": homeDir})
+		if !strings.Contains(out, "clu") {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("session should be gone after command exit:\n%s", out)
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 }

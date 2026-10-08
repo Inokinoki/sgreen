@@ -2,9 +2,9 @@ package pty
 
 import (
 	"io"
-	"time"
 	"os"
 	"os/exec"
+	"time"
 )
 
 // PTYProcess represents a PTY process with its command and PTY file
