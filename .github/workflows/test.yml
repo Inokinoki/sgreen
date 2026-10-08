@@ -51,6 +51,7 @@ jobs:
         go test -v $RACE -covermode=atomic -coverprofile=coverage.out -coverpkg=./... ./...
 
     - name: Report coverage
+      shell: bash
       run: go tool cover -func=coverage.out
 
     - name: Check coverage threshold
