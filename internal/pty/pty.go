@@ -2,6 +2,7 @@ package pty
 
 import (
 	"io"
+	"time"
 	"os"
 	"os/exec"
 )
@@ -66,6 +67,22 @@ func (pp *pipePair) Close() error {
 		return err1
 	}
 	return err2
+}
+
+// SetReadDeadline forwards to the read-side pipe.
+func (pp *pipePair) SetReadDeadline(t time.Time) error { return pp.r.SetReadDeadline(t) }
+
+// SetWriteDeadline forwards to the write-side pipe.
+func (pp *pipePair) SetWriteDeadline(t time.Time) error { return pp.w.SetWriteDeadline(t) }
+
+// SetDeadline forwards to both pipe ends.
+func (pp *pipePair) SetDeadline(t time.Time) error {
+	errR := pp.r.SetDeadline(t)
+	errW := pp.w.SetDeadline(t)
+	if errR != nil {
+		return errR
+	}
+	return errW
 }
 
 // Start creates a new PTY process with the given command and arguments

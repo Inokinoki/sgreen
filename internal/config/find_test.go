@@ -38,6 +38,8 @@ func TestFindConfigFileViaHomeDir(t *testing.T) {
 		t.Fatalf("failed to create test config: %v", err)
 	}
 	t.Setenv("HOME", homeDir)
+	// os.UserHomeDir reads USERPROFILE (not HOME) on Windows.
+	t.Setenv("USERPROFILE", homeDir)
 	t.Setenv("SCREENRC", "")
 
 	found, err := config.FindConfigFile("")
