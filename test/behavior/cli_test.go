@@ -97,6 +97,8 @@ func runSgreen(tb testing.TB, args []string, extraEnv map[string]string) (output
 	homeDir := tb.TempDir()
 	env := os.Environ()
 	env = setEnv(env, "HOME", homeDir)
+	// os.UserHomeDir reads USERPROFILE (not HOME) on Windows.
+	env = setEnv(env, "USERPROFILE", homeDir)
 	for k, v := range extraEnv {
 		env = setEnv(env, k, v)
 	}
