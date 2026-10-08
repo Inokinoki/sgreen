@@ -4,7 +4,7 @@
 *.dll
 *.so
 *.dylib
-sgreen
+/sgreen
 
 # Test binary, built with `go test -c`
 *.test
@@ -47,5 +47,4 @@ benchmark.txt
 Thumbs.db
 
 # Session files (test artifacts)
-.sgreen/sessions/
-*.json
+.sgreen/
