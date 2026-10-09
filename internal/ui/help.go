@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"runtime"
 	"strconv"
@@ -25,7 +26,7 @@ var availableCommands = []string{
 }
 
 // ShowHelp displays the help screen with key bindings
-func ShowHelp(out *os.File) {
+func ShowHelp(out io.Writer) {
 	helpText := `
 sgreen Key Bindings:
 

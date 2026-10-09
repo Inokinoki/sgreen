@@ -1,6 +1,3 @@
-//go:build !windows
-// +build !windows
-
 package ui
 
 import (
@@ -14,7 +11,6 @@ import (
 	"sync"
 	"time"
 
-	"golang.org/x/sys/unix"
 	"golang.org/x/term"
 
 	"github.com/inoki/sgreen/internal/pty"
@@ -99,19 +95,19 @@ func AttachWithConfig(in *os.File, out *os.File, errOut *os.File, sess *session.
 // attachLoop is the main loop that handles window switching
 func attachLoop(in *os.File, out *os.File, errOut *os.File, sess *session.Session, config *AttachConfig) error {
 	debugAttach("attach: start session=%q", sess.ID)
-	// Handle window size changes (Unix only)
+	// Handle window size changes
 	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, unix.SIGWINCH)
+	notifyResizeSignals(sigChan)
 	defer signal.Stop(sigChan)
 
-	// Handle SIGHUP for autodetach on hangup
+	// Handle hangup for autodetach on terminal loss
 	hupChan := make(chan os.Signal, 1)
-	signal.Notify(hupChan, unix.SIGHUP)
+	notifyHangupSignals(hupChan)
 	defer signal.Stop(hupChan)
 
 	// Handle SIGTERM and SIGINT for graceful shutdown
 	termChan := make(chan os.Signal, 1)
-	signal.Notify(termChan, unix.SIGTERM, unix.SIGINT)
+	notifyTermSignals(termChan)
 	defer signal.Stop(termChan)
 
 	// Create scrollback buffers for windows (stored in a map)
@@ -120,6 +116,42 @@ func attachLoop(in *os.File, out *os.File, errOut *os.File, sess *session.Sessio
 	// Create activity and silence monitors
 	activityMonitor := NewActivityMonitor(config.ActivityMsg)
 	silenceMonitor := NewSilenceMonitor(config.SilenceMsg, time.Duration(config.SilenceTimeout)*time.Second)
+
+	// The input pipeline is created once for the whole attach: a single
+	// reader goroutine owns stdin (two concurrent readers would steal each
+	// other's bytes after a window switch) and writes to a switchable
+	// target that always points at the current window's data connection.
+	// Window commands surface as reader errors; they are delivered to the
+	// select loop but do NOT end the goroutine - io.Copy would stop at the
+	// first command and leave stdin unread forever.
+	detachReader := newDetachReaderWithConfig(in, config)
+	inputTarget := &switchWriter{}
+	inputDone := make(chan error, 4)
+	go func() {
+		buf := make([]byte, 32*1024)
+		for {
+			n, err := detachReader.Read(buf)
+			if n > 0 {
+				if _, werr := inputTarget.Write(buf[:n]); werr != nil {
+					inputDone <- werr
+					return
+				}
+			}
+			if err != nil {
+				var winCmd *ErrWindowCommand
+				if errors.As(err, &winCmd) {
+					// Drop bytes typed while the command (e.g. a window
+					// switch with a daemon roundtrip) is being processed,
+					// instead of routing them to the outgoing window.
+					inputTarget.Set(io.Discard)
+					inputDone <- err
+					continue
+				}
+				inputDone <- err
+				return
+			}
+		}
+	}()
 
 	// Enable monitoring if configured
 	if config.ActivityMsg != "" {
@@ -182,6 +214,14 @@ func attachLoop(in *os.File, out *os.File, errOut *os.File, sess *session.Sessio
 			return fmt.Errorf("no current window")
 		}
 
+		// Daemon mode: keep exactly one live relay connection, bound to
+		// the current window (see ensureRemoteWindow).
+		if sess.Controller != nil {
+			if err := ensureRemoteWindow(sess, win); err != nil {
+				return err
+			}
+		}
+
 		ptyProc := win.GetPTYProcess()
 		if ptyProc == nil {
 			return fmt.Errorf("current window has no PTY process")
@@ -218,7 +258,7 @@ func attachLoop(in *os.File, out *os.File, errOut *os.File, sess *session.Sessio
 		outputWriter := createOutputWriterForWindow(out, config, win, logDir)
 
 		// Apply encoding conversion for this window if needed
-		encodedOutput := wrapEncodingWriter(outputWriter, win.Encoding)
+		encodedOutput := WrapEncodingWriter(outputWriter, win.Encoding)
 
 		// Wrap output writer to also write to scrollback
 		scrollbackWriter := io.MultiWriter(encodedOutput, &scrollbackWriter{scrollback: scrollback})
@@ -250,18 +290,14 @@ func attachLoop(in *os.File, out *os.File, errOut *os.File, sess *session.Sessio
 		// Copy from PTY to output with flow control
 		outputDone := make(chan error, 1)
 		go func() {
-			outputDone <- copyWithFlowControl(ptyProc.Pty, scrollbackWriter, flowControl)
+			debugAttach("attach: output copy starting (remote=%v)", ptyProc.IsRemote())
+			err := copyWithFlowControl(ptyProc.DataConn(), scrollbackWriter, flowControl)
+			debugAttach("attach: output copy finished err=%v", err)
+			outputDone <- err
 		}()
 
-		// Create a reader that detects detach sequence and window commands
-		detachReader := newDetachReaderWithConfig(in, config)
-
-		// Copy from input to PTY, with detach detection and window commands
-		inputDone := make(chan error, 1)
-		go func() {
-			_, err := io.Copy(ptyProc.Pty, detachReader)
-			inputDone <- err
-		}()
+		// Route user input to this window's data connection.
+		inputTarget.Set(ptyProc.DataConn())
 
 		// Handle terminal disconnection (SIGPIPE on write errors)
 		// This is handled implicitly by checking write errors in outputDone
@@ -330,6 +366,12 @@ func attachLoop(in *os.File, out *os.File, errOut *os.File, sess *session.Sessio
 
 			// Other error - handle gracefully
 			if err != nil {
+				if sess.Controller != nil {
+					if remoteConnEnded(sess, win) {
+						continue
+					}
+					return ErrDetach
+				}
 				// Check if PTY is still alive
 				if win := sess.GetCurrentWindow(); win != nil {
 					if ptyProc := win.GetPTYProcess(); ptyProc != nil {
@@ -357,6 +399,14 @@ func attachLoop(in *os.File, out *os.File, errOut *os.File, sess *session.Sessio
 			if err == io.EOF {
 				// PTY closed, try to continue with next window or exit
 				debugAttach("attach: output EOF session=%q", sess.ID)
+				if sess.Controller != nil {
+					if remoteConnEnded(sess, win) {
+						continue
+					}
+					// The daemon closed our connection deliberately
+					// (detach) or the session is over.
+					return ErrDetach
+				}
 				if len(sess.Windows) > 1 {
 					// Try next window
 					sess.NextWindow()
@@ -366,6 +416,12 @@ func attachLoop(in *os.File, out *os.File, errOut *os.File, sess *session.Sessio
 				return nil
 			}
 			if err != nil {
+				if sess.Controller != nil {
+					if remoteConnEnded(sess, win) {
+						continue
+					}
+					return ErrDetach
+				}
 				// Check if PTY is still alive
 				if win := sess.GetCurrentWindow(); win != nil {
 					if ptyProc := win.GetPTYProcess(); ptyProc != nil {
@@ -387,6 +443,49 @@ func attachLoop(in *os.File, out *os.File, errOut *os.File, sess *session.Sessio
 			return err
 		}
 	}
+}
+
+// ensureRemoteWindow keeps exactly one live daemon connection, bound to
+// the current window: endpoints of other windows are torn down (ending
+// their relay goroutines) and the current window opens one if needed.
+func ensureRemoteWindow(sess *session.Session, win *session.Window) error {
+	for _, w := range sess.Windows {
+		if w == nil || w.ID == win.ID {
+			continue
+		}
+		if p := w.GetPTYProcess(); p != nil && p.IsRemote() {
+			_ = p.Close()
+			w.SetPTYProcess(nil)
+		}
+	}
+	if p := win.GetPTYProcess(); p != nil && p.IsRemote() {
+		return nil
+	}
+	proc, err := sess.Controller.OpenWindowProcess(win)
+	if err != nil {
+		return fmt.Errorf("cannot reach session %s: %w", sess.ID, err)
+	}
+	win.SetPTYProcess(proc)
+	return nil
+}
+
+// remoteConnEnded decides what to do after the data connection for the
+// current window closed in daemon mode. It returns true when the window's
+// program died and another window remains (the loop should continue with
+// the session's new current window); false when the daemon deliberately
+// closed the connection (detach / power detach) or the session is over.
+func remoteConnEnded(sess *session.Session, win *session.Window) bool {
+	if err := sess.RefreshFromDisk(); err != nil {
+		// Session file gone: the daemon ended the session.
+		return false
+	}
+	for _, w := range sess.Windows {
+		if w != nil && w.ID == win.ID {
+			// Window still alive: we were kicked, not window death.
+			return false
+		}
+	}
+	return len(sess.Windows) > 0
 }
 
 func debugAttach(format string, args ...any) {
@@ -495,7 +594,7 @@ func handleWindowCommand(sess *session.Session, cmd *ErrWindowCommand, config *A
 		if len(pasteContent) > 0 {
 			win := sess.GetCurrentWindow()
 			if win != nil && win.GetPTYProcess() != nil {
-				if _, err := win.GetPTYProcess().Pty.Write(pasteContent); err != nil {
+				if _, err := win.GetPTYProcess().DataConn().Write(pasteContent); err != nil {
 					return err
 				}
 			}
@@ -895,6 +994,7 @@ func (dr *detachReader) Read(p []byte) (n int, err error) {
 		switch b {
 		case 'd':
 			// Detach sequence detected
+			dr.state = 0
 			return 0, ErrDetach
 		case dr.literalChar:
 			// Literal command char - send the command char to the program
@@ -911,15 +1011,19 @@ func (dr *detachReader) Read(p []byte) (n int, err error) {
 			return 0, &ErrWindowCommand{Command: "toggle"}
 		case 'c':
 			// Create new window - handled by command handler
+			dr.state = 0
 			return 0, &ErrWindowCommand{Command: "create"}
 		case 'n':
 			// Next window
+			dr.state = 0
 			return 0, &ErrWindowCommand{Command: "next"}
 		case 'p':
 			// Previous window
+			dr.state = 0
 			return 0, &ErrWindowCommand{Command: "prev"}
 		case 'k':
 			// Kill current window
+			dr.state = 0
 			return 0, &ErrWindowCommand{Command: "kill"}
 		case 'A':
 			// Set window title - need to read title
@@ -927,9 +1031,11 @@ func (dr *detachReader) Read(p []byte) (n int, err error) {
 			return 0, nil
 		case '[':
 			// Enter copy mode
+			dr.state = 0
 			return 0, &ErrWindowCommand{Command: "copymode"}
 		case ']':
 			// Paste from buffer
+			dr.state = 0
 			return 0, &ErrWindowCommand{Command: "paste"}
 		case '{':
 			// Write paste buffer to file
@@ -949,18 +1055,23 @@ func (dr *detachReader) Read(p []byte) (n int, err error) {
 			return 0, nil
 		case '?':
 			// Show help
+			dr.state = 0
 			return 0, &ErrWindowCommand{Command: "help"}
 		case ':':
 			// Command prompt
+			dr.state = 0
 			return 0, &ErrWindowCommand{Command: "command"}
 		case '.':
 			// Redraw screen
+			dr.state = 0
 			return 0, &ErrWindowCommand{Command: "redraw"}
 		case 'x':
 			// Lock screen
+			dr.state = 0
 			return 0, &ErrWindowCommand{Command: "lock"}
 		case 'v':
 			// Version information
+			dr.state = 0
 			return 0, &ErrWindowCommand{Command: "version"}
 		case 0x16:
 			// C-a C-v: Enter digraph mode
@@ -969,32 +1080,41 @@ func (dr *detachReader) Read(p []byte) (n int, err error) {
 			return 0, nil
 		case ',':
 			// License information
+			dr.state = 0
 			return 0, &ErrWindowCommand{Command: "license"}
 		case 't':
 			// Time/load display
+			dr.state = 0
 			return 0, &ErrWindowCommand{Command: "time"}
 		case '_':
 			// Blank screen
+			dr.state = 0
 			return 0, &ErrWindowCommand{Command: "blank"}
 		case 's':
 			// Suspend screen
+			dr.state = 0
 			return 0, &ErrWindowCommand{Command: "suspend"}
 		case '\\':
 			// Kill all windows and terminate (C-a C-\)
 			if dr.state == 1 {
+				dr.state = 0
 				return 0, &ErrWindowCommand{Command: "killall"}
 			}
 		case '0', '1', '2', '3', '4', '5', '6', '7', '8', '9':
 			// Switch to window 0-9
+			dr.state = 0
 			return 0, &ErrWindowCommand{Command: "switch", Window: string(b)}
 		case ' ':
 			// Space: Next window (alternative)
+			dr.state = 0
 			return 0, &ErrWindowCommand{Command: "next"}
 		case '\b', 0x7f: // Backspace
 			// Backspace: Previous window (alternative)
+			dr.state = 0
 			return 0, &ErrWindowCommand{Command: "prev"}
 		case '"':
 			// Interactive window list - for now, just show list
+			dr.state = 0
 			return 0, &ErrWindowCommand{Command: "list"}
 		case '\'':
 			// Select window by name/number - enter selection mode
@@ -1003,6 +1123,7 @@ func (dr *detachReader) Read(p []byte) (n int, err error) {
 		default:
 			// Check for A-Z (windows 10-35)
 			if b >= 'A' && b <= 'Z' {
+				dr.state = 0
 				return 0, &ErrWindowCommand{Command: "switch", Window: string(b)}
 			}
 			// Not a recognized command, output the command char we held back, then this byte
@@ -1187,12 +1308,7 @@ func lockScreen(in, out *os.File) error {
 
 // suspendScreen suspends the screen process
 func suspendScreen() error {
-	// Send SIGTSTP to self
-	proc, err := os.FindProcess(os.Getpid())
-	if err != nil {
-		return err
-	}
-	return proc.Signal(unix.SIGTSTP)
+	return suspendSelf()
 }
 
 // killAllWindows kills all windows and terminates the session

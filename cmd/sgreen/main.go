@@ -1,17 +1,20 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"sort"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
+	"github.com/inoki/sgreen/internal/daemon"
 	"github.com/inoki/sgreen/internal/session"
 	"github.com/inoki/sgreen/internal/ui"
 	xterm "golang.org/x/term"
@@ -60,7 +63,7 @@ type Config struct {
 }
 
 func main() {
-	if runDetachKeeperIfRequested() {
+	if daemon.RunFromEnv() {
 		return
 	}
 
@@ -115,6 +118,11 @@ func main() {
 	flag.Usage = printUsage
 	if err := flag.CommandLine.Parse(normalizeArgs(os.Args[1:])); err != nil {
 		printUsage()
+		// GNU screen prints usage and exits 0 for "-h" without a value
+		// (-h num needs its argument; bare -h behaves help-like).
+		if strings.Contains(err.Error(), "flag needs an argument: -h") {
+			os.Exit(0)
+		}
 		os.Exit(1)
 	}
 
@@ -172,16 +180,16 @@ func main() {
 		}
 	}
 
-	// Handle version
+	// Handle version (GNU screen exits 0 after printing the version)
 	if *version {
 		printVersion()
-		os.Exit(1)
+		os.Exit(0)
 	}
 
 	// Handle help
 	if *helpLong || *helpAlt {
 		printUsage()
-		os.Exit(1)
+		os.Exit(0)
 	}
 
 	// Handle wipe
@@ -189,9 +197,10 @@ func main() {
 		os.Exit(handleWipe(config.Quiet))
 	}
 
-	// Handle send command (-X)
+	// Handle send command (-X). Everything after the -X value belongs to
+	// the command, mirroring "screen -X stuff hello".
 	if *sendCommand != "" {
-		handleSendCommand(*sessionName, *sendCommand)
+		handleSendCommand(*sessionName, *sendCommand, flag.Args())
 		return
 	}
 
@@ -227,16 +236,31 @@ func main() {
 		return
 	}
 
-	// Handle power detach (-D)
-	if *powerDetach {
-		targetSession := resolvePowerDetachTarget(*sessionName, flag.Args())
-		handlePowerDetach(targetSession, config)
+	// Combined detach + reattach forms (GNU screen):
+	//   -d -r / -D -r  detach (power) and resume here
+	//   -d -R / -D -R  detach (power) if necessary, resume or create
+	//   -d -RR / -D -RR same with "whatever it takes" semantics
+	switch {
+	case *powerDetach && (*reattach || *reattachOrCreate || *reattachOrCreateRR):
+		handleDetachAndResume(true, *sessionName, flag.Args(), *reattach,
+			*reattachOrCreate || *reattachOrCreateRR, *reattachOrCreateRR, config)
+		return
+	case *detach && (*reattach || *reattachOrCreate || *reattachOrCreateRR):
+		handleDetachAndResume(false, *sessionName, flag.Args(), *reattach,
+			*reattachOrCreate || *reattachOrCreateRR, *reattachOrCreateRR, config)
 		return
 	}
 
-	// Handle detach
+	// Handle power detach (-D): detach the elsewhere running session and exit.
+	if *powerDetach {
+		targetSession := resolvePowerDetachTarget(*sessionName, flag.Args())
+		handleRemoteDetach(targetSession, true)
+		return
+	}
+
+	// Handle detach (-d): detach the elsewhere running session and exit.
 	if *detach {
-		handleDetach(*reattach, resolveSessionName(*sessionName, flag.Args()))
+		handleRemoteDetach(resolveSessionName(*sessionName, flag.Args()), false)
 		return
 	}
 
@@ -247,7 +271,8 @@ func main() {
 		return
 	}
 
-	// Handle reattach or create (-R)
+	// Handle reattach or create (-R): only detached sessions are
+	// candidates; if none, create a new session (GNU semantics).
 	if *reattachOrCreate {
 		targetSession, cmdArgs := resolveSessionAndCommandArgs(*sessionName, flag.Args())
 		handleReattachOrCreate(targetSession, cmdArgs, config)
@@ -282,106 +307,230 @@ func printVersion() {
 	fmt.Printf("Screen version %s (sgreen)\n", version)
 }
 
-// handleWipe removes dead sessions from the list.
-// Return values mirror GNU screen CLI behavior:
-// 0 when dead sessions were removed, non-zero otherwise.
+// handleWipe removes dead sessions from the list. A session is dead when
+// its daemon no longer exists (the daemon tears its own files down on
+// clean exit, so leftovers are the result of crashes or kills).
+// Return values mirror GNU screen: 0 when dead sessions were removed.
 func handleWipe(quiet bool) int {
-	// First, clean up orphaned processes
-	if err := session.CleanupOrphanedProcesses(); err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "Warning: failed to cleanup orphaned processes: %v\n", err)
-	}
-
 	sessions := session.List()
 	if len(sessions) == 0 {
-		if !quiet {
-			fmt.Printf("No Sockets found in %s.\n", screenSocketDirForDisplay())
-			return 1
+		if quiet {
+			return 9
 		}
-		return 8
+		fmt.Printf("No Sockets found in %s.\n\n", screenSocketDirForDisplay())
+		return 1
 	}
+
 	removed := 0
-
 	for _, sess := range sessions {
-		// Check if session is dead
-		isDead := false
-
-		// Check all windows in the session
-		if len(sess.Windows) > 0 {
-			allWindowsDead := true
-			for _, win := range sess.Windows {
-				if win.GetPTYProcess() != nil && win.GetPTYProcess().IsAlive() {
-					allWindowsDead = false
-					break
-				}
-				// Try to reconnect if we have pts path
-				if win.PtsPath != "" {
-					if err := sess.ReconnectPTY(); err == nil {
-						allWindowsDead = false
-						break
-					}
-				}
-			}
-			if allWindowsDead {
-				isDead = true
-			}
-		} else {
-			// Fallback to old method for backward compatibility
-			if !isProcessAliveByPID(sess.Pid) {
-				// Try to reconnect first
-				if sess.PtsPath != "" {
-					if err := sess.ReconnectPTY(); err != nil {
-						isDead = true
-					}
-				} else {
-					isDead = true
-				}
-			}
+		if sessionUsable(sess) {
+			continue
 		}
-
-		if isDead {
-			// Session is dead, remove it
-			if err := session.Delete(sess.ID); err == nil {
-				removed++
-			}
+		// Session is dead; remove its file and socket. No process killing:
+		// with the daemon model, a dead daemon means the program is gone or
+		// orphaned beyond recovery either way.
+		if err := session.Delete(sess.ID); err == nil || os.IsNotExist(err) {
+			removed++
 		}
 	}
 
 	if removed > 0 {
-		fmt.Printf("Removed %d dead session(s)\n", removed)
+		fmt.Printf("%d socket%s wiped out.\n", removed, pluralSuffix(removed))
 		return 0
 	}
 	if !quiet {
-		fmt.Println("No dead sessions found")
+		fmt.Println("No dead screens found.")
 	}
 	return 1
 }
 
-// handleSendCommand sends a command to a running session
-func handleSendCommand(sessionName, command string) {
+func pluralSuffix(count int) string {
+	if count == 1 {
+		return ""
+	}
+	return "s"
+}
+
+// handleSendCommand sends a command to a running session (-X). command is
+// the -X flag value, rest the positional arguments; both are kept separate
+// because commands like "stuff" need the arguments' embedded whitespace
+// (e.g. the trailing newline that submits a shell command) verbatim.
+func handleSendCommand(sessionName, command string, rest []string) {
+	if strings.TrimSpace(command) == "" {
+		_, _ = fmt.Fprintln(os.Stderr, "Please specify a command.")
+		os.Exit(1)
+	}
+
+	sessions := session.List()
 	var sess *session.Session
-	var err error
 
 	if sessionName != "" {
-		sess, err = session.Load(sessionName)
+		var matches []*session.Session
+		sess, matches = resolveSessionTarget(sessionName)
+		if sess == nil {
+			if len(matches) > 0 {
+				printCandidateList(matches)
+			}
+			_, _ = fmt.Fprintln(os.Stderr, "No screen session found.")
+			os.Exit(1)
+		}
 	} else {
-		sessions := session.List()
 		if len(sessions) == 0 {
-			_, _ = fmt.Fprintf(os.Stderr, "No screen session found.\n")
+			_, _ = fmt.Fprintln(os.Stderr, "No screen session found.")
+			os.Exit(1)
+		}
+		if len(sessions) > 1 {
+			fmt.Println("There are several suitable screens on:")
+			printSessionList(sessions)
+			_, _ = fmt.Fprintln(os.Stderr, "Use -S to specify a session.")
 			os.Exit(1)
 		}
 		sess = sessions[0]
 	}
 
-	if err != nil {
-		_, _ = fmt.Fprintln(os.Stderr, "No screen session found.")
-		os.Exit(1)
+	fields := strings.Fields(command)
+	cmd := fields[0]
+	// rest holds the positional arguments ("sgreen -X stuff hello world");
+	// with the quoted whole-command form ('sgreen -X "stuff hello"') the
+	// words live in the flag value instead.
+	args := rest
+	if len(args) == 0 && len(fields) > 1 {
+		args = fields[1:]
 	}
+	socketPath := session.SocketPath(sess.ID)
 
-	// Execute command in session
-	if err := session.ExecuteCommand(sess, command); err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "Error executing command: %v\n", err)
-		os.Exit(1)
+	switch cmd {
+	case "quit", "exit":
+		if daemon.Supported() {
+			if err := daemon.SendQuit(socketPath); err != nil {
+				_, _ = fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
+		if err := session.ExecuteCommand(sess, command); err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "Error executing command: %v\n", err)
+			os.Exit(1)
+		}
+	case "detach", "pow_detach", "powerdetach":
+		if daemon.Supported() {
+			if err := daemon.SendDetach(socketPath, cmd != "detach"); err != nil {
+				_, _ = fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
+	case "stuff":
+		if daemon.Supported() {
+			// Join the raw positional arguments: their inner whitespace
+			// (spaces, the trailing \n that submits a command) must
+			// survive; strings.Fields would strip it.
+			data := strings.Join(args, " ")
+			if err := daemon.SendStuff(socketPath, data); err != nil {
+				_, _ = fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
+	case "screen":
+		// -X screen [-t title] [cmd [args...]]: create a window,
+		// defaulting to a shell (GNU's -X screen passes -t through).
+		if !daemon.Supported() {
+			return
+		}
+		title := ""
+		if len(args) >= 2 && args[0] == "-t" {
+			title = args[1]
+			args = args[2:]
+		}
+		ctrl := daemon.NewController(socketPath)
+		cmdPath, cmdArgs := defaultWindowCommand(args)
+		winID, err := ctrl.CreateWindow(cmdPath, cmdArgs, "")
+		if err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		if title != "" {
+			if err := ctrl.SetTitle(winID, title); err != nil {
+				_, _ = fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+		}
+		return
+	case "select":
+		// -X select <number>: switch the session's current window.
+		if !daemon.Supported() {
+			return
+		}
+		if len(args) == 0 {
+			_, _ = fmt.Fprintln(os.Stderr, "Error: select requires a window number")
+			os.Exit(1)
+		}
+		ctrl := daemon.NewController(socketPath)
+		if _, err := ctrl.SwitchWindow("select", args[0]); err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	case "kill":
+		// -X kill: kill the current window; the last window ends the
+		// session (GNU semantics).
+		if !daemon.Supported() {
+			return
+		}
+		if err := daemon.SendKillCurrent(socketPath); err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	case "title":
+		if !daemon.Supported() {
+			return
+		}
+		title := strings.Join(args, " ")
+		if err := daemon.SendTitleCurrent(socketPath, title); err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	case "windows":
+		// GNU shows this on the session's message line; printing the list
+		// to the caller makes -X windows useful for scripting.
+		if err := sess.RefreshFromDisk(); err == nil {
+			for _, win := range sess.Windows {
+				if win == nil {
+					continue
+				}
+				marker := " "
+				if win.ID == sess.CurrentWindow {
+					marker = "*"
+				}
+				name := win.Title
+				if name == "" {
+					name = win.CmdPath
+				}
+				fmt.Printf("%d%s %s\n", win.ID, marker, name)
+			}
+		}
+		return
+	default:
+		// GNU screen delivers arbitrary commands asynchronously and exits
+		// 0 even for commands the session does not know; mirror that.
+		return
 	}
+}
+
+// defaultWindowCommand resolves the command for a new window: the given
+// command when present, otherwise the user's shell.
+func defaultWindowCommand(parts []string) (string, []string) {
+	if len(parts) > 0 {
+		return parts[0], parts[1:]
+	}
+	shellPath := "/bin/sh"
+	if envShell := os.Getenv("SHELL"); envShell != "" {
+		shellPath = envShell
+	}
+	return shellPath, nil
 }
 
 // handleNew creates a new session
@@ -463,7 +612,7 @@ func handleNew(sessionName string, cmdArgs []string, config *Config) {
 	existingSess, err := session.Load(sessionName)
 	needsPidRename := false
 	if err == nil && existingSess != nil {
-		if sessionHasAttachablePTY(existingSess) {
+		if sessionUsable(existingSess) {
 			// Session exists, try to attach to it instead
 			if !config.Quiet {
 				_, _ = fmt.Fprintf(os.Stderr, "Session %s already exists. Attaching...\n", sessionName)
@@ -472,7 +621,7 @@ func handleNew(sessionName string, cmdArgs []string, config *Config) {
 			return
 		}
 
-		// Session exists but has no usable PTY; create a new unique session name.
+		// Session exists but is dead; create a new unique session name.
 		newName := nextAvailableSessionName(sessionName)
 		if !config.Quiet {
 			_, _ = fmt.Fprintf(os.Stderr, "Session %s has no active PTY. Creating new session with PID prefix.\n", sessionName)
@@ -508,6 +657,10 @@ func handleNew(sessionName string, cmdArgs []string, config *Config) {
 	}
 
 	applyWindowTitle(sess, config)
+
+	// Hand the PTY master to the session daemon; this process then attaches
+	// through the daemon socket like any other client.
+	startSessionDaemon(sess)
 
 	// Attach to the new session
 	attachToSession(sess, config)
@@ -571,9 +724,9 @@ func handleNewDetached(sessionName string, cmdArgs []string, config *Config) {
 	}
 	applyWindowTitle(sess, config)
 
-	// Keep PTY master alive after this process exits (same mechanism as detach).
-	startDetachKeeper(sess)
-	sess.ForceDetach()
+	// Hand the PTY master to the session daemon, which keeps the session
+	// alive after this process exits.
+	startSessionDaemon(sess)
 }
 
 // handleNewDetachedNoFork creates a detached session without spawning a keeper process.
@@ -636,9 +789,9 @@ func handleNewDetachedNoFork(sessionName string, cmdArgs []string, config *Confi
 	applyWindowTitle(sess, config)
 
 	ptyProc := sess.GetPTYProcess()
-	sess.ForceDetach()
-	if ptyProc != nil {
-		_ = ptyProc.Wait()
+	startSessionDaemon(sess)
+	if ptyProc != nil && ptyProc.Cmd != nil {
+		_ = ptyProc.Cmd.Wait()
 	}
 }
 
@@ -652,21 +805,6 @@ func applyWindowTitle(sess *session.Session, config *Config) {
 	}
 	win.Title = config.WindowTitle
 	_ = sess.Save()
-}
-
-func sessionHasAttachablePTY(sess *session.Session) bool {
-	if sess == nil {
-		return false
-	}
-	if ptyProc := sess.GetPTYProcess(); ptyProc != nil && ptyProc.IsAlive() {
-		return true
-	}
-	if sess.PtsPath != "" {
-		if err := sess.ReconnectPTY(); err == nil {
-			return true
-		}
-	}
-	return false
 }
 
 func nextAvailableSessionName(base string) string {
@@ -688,11 +826,18 @@ func handleReattachWithConfig(sessionName string, config *Config) {
 		config = &Config{}
 	}
 
+	resolve := func(name string) (*session.Session, []*session.Session, error) {
+		sess, candidates := resolveSessionTarget(name)
+		if sess == nil {
+			return nil, candidates, fmt.Errorf("no unique session matching %s", name)
+		}
+		return sess, nil, nil
+	}
 	sess, errMsg, printList := selectReattachSession(
 		sessions,
 		sessionName,
 		config.Multiuser,
-		session.Load,
+		resolve,
 		isSessionAttached,
 	)
 	if errMsg != "" {
@@ -700,7 +845,7 @@ func handleReattachWithConfig(sessionName string, config *Config) {
 			if isNoResumableError(errMsg) {
 				os.Exit(10)
 			}
-			if printList && strings.Contains(errMsg, "There are several detached sessions:") {
+			if printList && strings.HasPrefix(errMsg, "There are several") {
 				count := resumableSessionCount(sessions)
 				if count < 2 {
 					count = 2
@@ -711,6 +856,9 @@ func handleReattachWithConfig(sessionName string, config *Config) {
 		_, _ = fmt.Fprintln(os.Stderr, errMsg)
 		if printList {
 			printSessionList(sessions)
+			if strings.HasPrefix(errMsg, "There are several") && !config.Multiuser {
+				fmt.Println(`Type "screen [-d] -r [pid.]tty.host" to resume one of them.`)
+			}
 		}
 		os.Exit(1)
 	}
@@ -718,19 +866,31 @@ func handleReattachWithConfig(sessionName string, config *Config) {
 	attachToSession(sess, config)
 }
 
+// isSessionAttached reports whether a session currently has a client
+// attached. With the daemon model this is the daemon-maintained flag in
+// the session file (plus a daemon liveness check so a crashed daemon's
+// stale flag is ignored); the in-process PTY covers local attaches.
 func isSessionAttached(sess *session.Session) bool {
 	if sess == nil {
 		return false
 	}
-	ptyProc := sess.GetPTYProcess()
-	return ptyProc != nil && ptyProc.IsAlive()
+	if ptyProc := sess.GetPTYProcess(); ptyProc != nil && !ptyProc.IsRemote() && ptyProc.IsAlive() {
+		return true
+	}
+	if !sessionUsable(sess) {
+		return false
+	}
+	return sess.Attached
 }
 
+// selectReattachSession picks the session to resume. Error returns follow
+// GNU screen: the message plus (when useful) a session listing that the
+// caller prints after the message.
 func selectReattachSession(
 	sessions []*session.Session,
 	sessionName string,
 	multiuser bool,
-	loadByName func(string) (*session.Session, error),
+	resolveByName func(string) (*session.Session, []*session.Session, error),
 	isAttached func(*session.Session) bool,
 ) (*session.Session, string, bool) {
 	if len(sessions) == 0 {
@@ -741,15 +901,20 @@ func selectReattachSession(
 	}
 
 	if sessionName != "" {
-		sess, err := loadByName(sessionName)
+		sess, candidates, err := resolveByName(sessionName)
 		if err != nil {
 			if multiuser {
 				return nil, noAttachableScreenMessage(sessionName), false
 			}
-			return nil, noResumableScreenMessage(sessionName), false
+			return nil, noResumableScreenMessage(sessionName), len(candidates) > 0
 		}
 		if !multiuser && isAttached(sess) {
-			return nil, fmt.Sprintf("Session %s is attached; use -d -r or -x.", sessionName), false
+			// GNU prints the session list, then the "no screen to be
+			// resumed" message.
+			return nil, noResumableScreenMessage(sessionName), true
+		}
+		if !multiuser && !sessionUsable(sess) {
+			return nil, noResumableScreenMessage(sessionName), false
 		}
 		return sess, "", false
 	}
@@ -758,12 +923,12 @@ func selectReattachSession(
 		if len(sessions) == 1 {
 			return sessions[0], "", false
 		}
-		return nil, "Multiple sessions found. Specify session name with -x:", true
+		return nil, "There are several screens on:", true
 	}
 
 	detached := make([]*session.Session, 0, len(sessions))
 	for _, sess := range sessions {
-		if !isAttached(sess) && sessionHasAliveProcess(sess) {
+		if !isAttached(sess) && sessionUsable(sess) {
 			detached = append(detached, sess)
 		}
 	}
@@ -771,165 +936,225 @@ func selectReattachSession(
 		return detached[0], "", false
 	}
 	if len(detached) > 1 {
-		return nil, "There are several detached sessions:", true
+		return nil, "There are several suitable screens on:", true
 	}
-	if len(sessions) == 1 && isAttached(sessions[0]) {
-		return nil, noResumableScreenMessage(""), false
-	}
-	return nil, noResumableScreenMessage(""), false
+	// No detached session: GNU lists what exists and reports failure.
+	return nil, noResumableScreenMessage(""), len(sessions) > 0
 }
 
-// handleReattachOrCreate implements -R flag: reattach or create if none exists
+// handleReattachOrCreate implements -R: reattach to the first DETACHED
+// session; if none exists, create a new one (GNU semantics — attached
+// sessions are not candidates for -R).
 func handleReattachOrCreate(sessionName string, cmdArgs []string, config *Config) {
 	sessions := session.List()
 
-	// If no sessions exist, create a new one
-	if len(sessions) == 0 {
-		handleNew(sessionName, cmdArgs, config)
-		return
-	}
-
-	// Try to find a session to reattach to
-	var sess *session.Session
-	var err error
-
 	if sessionName != "" {
-		// Try to load specific session
-		sess, err = session.Load(sessionName)
-		if err != nil {
-			// Session not found, create new one with this name
+		loaded, _ := resolveSessionTarget(sessionName)
+		if loaded == nil || !sessionUsable(loaded) {
+			// Session not found (or dead), create new one with this name.
 			handleNew(sessionName, cmdArgs, config)
 			return
 		}
-	} else {
-		// Find first detached session, or first session if only one
-		detached := findDetachedSessions(sessions)
-		if len(detached) > 0 {
-			sess = detached[0]
-		} else if len(sessions) == 1 {
-			sess = sessions[0]
-		} else {
-			// Multiple sessions, use first one
-			sess = sessions[0]
+		sess := loaded
+		if isSessionAttached(sess) {
+			// Attached elsewhere: GNU -R lists it and starts a new session.
+			fmt.Println("There is a screen on:")
+			printSessionList([]*session.Session{sess})
+			handleNew(nextAvailableSessionName(sessionName), cmdArgs, config)
+			return
 		}
+		attachToSession(sess, config)
+		return
 	}
 
-	// Reattach to the found session
-	attachToSession(sess, config)
+	// Find first detached session; attached sessions do not qualify.
+	detached := findDetachedSessions(sessions)
+	if len(detached) > 0 {
+		attachToSession(detached[0], config)
+		return
+	}
+
+	// No detached session: create a new one (GNU prints the existing
+	// sessions first when there are several).
+	if len(sessions) > 0 {
+		fmt.Println("There are screens on:")
+		printSessionList(sessions)
+	}
+	handleNew(sessionName, cmdArgs, config)
 }
 
-// handleReattachOrCreateRR implements -RR flag: reattach or create, detaching elsewhere if needed
+// handleReattachOrCreateRR implements -RR: attach here and now — pick the
+// first session, power-detaching it if attached elsewhere; create if none.
 func handleReattachOrCreateRR(sessionName string, cmdArgs []string, config *Config) {
 	sessions := session.List()
 
-	// If no sessions exist, create a new one
+	if sessionName != "" {
+		loaded, _ := resolveSessionTarget(sessionName)
+		if loaded == nil || !sessionUsable(loaded) {
+			handleNew(sessionName, cmdArgs, config)
+			return
+		}
+		detachSessionIfAttached(loaded, true)
+		attachToSession(loaded, config)
+		return
+	}
+
 	if len(sessions) == 0 {
 		handleNew(sessionName, cmdArgs, config)
 		return
 	}
 
-	var sess *session.Session
-	var err error
-
-	if sessionName != "" {
-		sess, err = session.Load(sessionName)
-		if err != nil {
-			// Session not found, create new one
-			handleNew(sessionName, cmdArgs, config)
-			return
-		}
-	} else {
-		// Find first session (prefer detached)
-		detached := findDetachedSessions(sessions)
-		if len(detached) > 0 {
-			sess = detached[0]
-		} else {
-			sess = sessions[0]
-		}
-	}
-
-	// Force detach if attached elsewhere, then attach
-	if sess.GetPTYProcess() != nil {
-		sess.ForceDetach()
-	}
-
-	attachToSession(sess, config)
-}
-
-// handlePowerDetach implements -D flag: power detach (force detach from elsewhere)
-func handlePowerDetach(sessionName string, config *Config) {
-	sessions := session.List()
-	_ = config
-
-	if len(sessions) == 0 {
-		_, _ = fmt.Fprintln(os.Stderr, noDetachableScreenMessage(sessionName))
-		os.Exit(1)
+	// Prefer the first detached session, else detach the first one.
+	detached := findDetachedSessions(sessions)
+	if len(detached) > 0 {
+		attachToSession(detached[0], config)
 		return
 	}
-
-	var sess *session.Session
-	var err error
-
-	if sessionName != "" {
-		sess, err = session.Load(sessionName)
-		if err != nil {
-			_, _ = fmt.Fprintln(os.Stderr, noDetachableScreenMessage(sessionName))
-			os.Exit(1)
-			return
-		}
-	} else {
-		// Find first session (prefer detached, but any will do)
-		detached := findDetachedSessions(sessions)
-		if len(detached) > 0 {
-			sess = detached[0]
-		} else {
-			sess = sessions[0]
-		}
-	}
-
-	// Force detach: clear PTY process reference to allow reattachment
-	if sess.GetPTYProcess() != nil {
-		sess.ForceDetach()
-	}
-
-	// After detaching, attach to the session
-	attachToSession(sess, config)
+	detachSessionIfAttached(sessions[0], true)
+	attachToSession(sessions[0], config)
 }
 
-// handleDetach detaches a session
-func handleDetach(reattach bool, sessionName string) {
+// detachSessionIfAttached remotely detaches a session when someone is
+// attached to it.
+func detachSessionIfAttached(sess *session.Session, power bool) {
+	if sess == nil || !isSessionAttached(sess) {
+		return
+	}
+	_ = daemon.SendDetach(session.SocketPath(sess.ID), power)
+	waitForDetach(sess)
+}
+
+// waitForDetach blocks briefly until the daemon reports the session as
+// detached (or times out — a hung attach must not wedge -RR forever).
+func waitForDetach(sess *session.Session) {
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		sessions := session.List()
+		for _, s := range sessions {
+			if s.ID == sess.ID && !s.Attached {
+				return
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// handleRemoteDetach implements plain -d / -D: detach the elsewhere
+// running session, print "[<name> detached.]", and exit 0 (GNU behavior:
+// no local attach happens).
+func handleRemoteDetach(sessionName string, power bool) {
 	sessions := session.List()
 
-	if len(sessions) == 0 {
-		_, _ = fmt.Fprintln(os.Stderr, noDetachableScreenMessage(sessionName))
-		os.Exit(1)
-	}
-
-	var sess *session.Session
-	var err error
-
+	var candidates []*session.Session
 	if sessionName != "" {
-		sess, err = session.Load(sessionName)
-		if err != nil {
+		sess, matches := resolveSessionTarget(sessionName)
+		if sess == nil {
+			printCandidateList(matches)
 			_, _ = fmt.Fprintln(os.Stderr, noDetachableScreenMessage(sessionName))
 			os.Exit(1)
 		}
+		candidates = []*session.Session{sess}
 	} else {
-		// Find first attached session
-		attached := findAttachedSessions(sessions)
-		if len(attached) == 0 {
+		for _, sess := range sessions {
+			if isSessionAttached(sess) {
+				candidates = append(candidates, sess)
+			}
+		}
+		if len(candidates) == 0 {
 			_, _ = fmt.Fprintln(os.Stderr, noDetachableScreenMessage(""))
 			os.Exit(1)
 		}
-		sess = attached[0]
+		if len(candidates) > 1 {
+			fmt.Println("There are several screens on:")
+			printSessionList(sessions)
+			_, _ = fmt.Fprintln(os.Stderr, "There is no screen to be detached.")
+			fmt.Println(`Type "screen [-d] -r [pid.]tty.host" to resume one of them.`)
+			os.Exit(1)
+		}
 	}
 
-	// Detach is handled by the user pressing Ctrl+A, d
-	// This function just validates the session exists
-	// If reattach is also requested, attach after validation
-	if reattach {
-		attachToSession(sess, &Config{})
+	sess := candidates[0]
+	if !isSessionAttached(sess) {
+		// GNU lists the session, then reports there is nothing to detach.
+		fmt.Println("There is a screen on:")
+		printSessionList([]*session.Session{sess})
+		_, _ = fmt.Fprintln(os.Stderr, noDetachableScreenMessage(sessionName))
+		os.Exit(1)
 	}
+
+	if err := daemon.SendDetach(session.SocketPath(sess.ID), power); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "Error detaching session: %v\n", err)
+		os.Exit(1)
+	}
+	waitForDetach(sess)
+
+	suffix := "detached.]"
+	if power {
+		suffix = "power detached.]"
+	}
+	fmt.Printf("[%s %s\n\n", sessionDisplayName(sess), suffix)
+	os.Exit(0)
+}
+
+// handleDetachAndResume implements the -d -r / -D -r / -d -R / -D -R
+// families: remotely detach the target first (if attached), then resume
+// here (or create, for the -R forms).
+func handleDetachAndResume(power bool, sessionName string, cmdArgs []string, resume, create, createRR bool, config *Config) {
+	sessions := session.List()
+
+	var sess *session.Session
+	if sessionName != "" {
+		loaded, matches := resolveSessionTarget(sessionName)
+		if loaded != nil {
+			sess = loaded
+		} else if !create && !createRR {
+			printCandidateList(matches)
+			_, _ = fmt.Fprintln(os.Stderr, noResumableScreenMessage(sessionName))
+			os.Exit(1)
+		}
+	} else {
+		attached := findAttachedSessions(sessions)
+		if len(attached) > 1 {
+			fmt.Println("There are several screens on:")
+			printSessionList(sessions)
+			_, _ = fmt.Fprintln(os.Stderr, "There is no screen to be resumed.")
+			fmt.Println(`Type "screen [-d] -r [pid.]tty.host" to resume one of them.`)
+			os.Exit(1)
+		}
+		if len(attached) == 1 {
+			sess = attached[0]
+		} else {
+			detached := findDetachedSessions(sessions)
+			if len(detached) == 1 {
+				sess = detached[0]
+			} else if len(detached) > 1 {
+				fmt.Println("There are several suitable screens on:")
+				printSessionList(detached)
+				_, _ = fmt.Fprintln(os.Stderr, "There is no screen to be resumed.")
+				fmt.Println(`Type "screen [-d] -r [pid.]tty.host" to resume one of them.`)
+				os.Exit(1)
+			}
+		}
+	}
+
+	if sess != nil && sessionUsable(sess) {
+		detachSessionIfAttached(sess, power)
+		attachToSession(sess, config)
+		return
+	}
+
+	// -d -r with no resumable session: GNU reports failure.
+	if !create && !createRR {
+		msg := noResumableScreenMessage(sessionName)
+		_, _ = fmt.Fprintln(os.Stderr, msg)
+		if len(sessions) > 0 {
+			printSessionList(sessions)
+		}
+		os.Exit(1)
+	}
+
+	// -R family: create instead.
+	handleNew(sessionName, cmdArgs, config)
 }
 
 // attachToSession attaches to a session
@@ -943,35 +1168,118 @@ func attachToSession(sess *session.Session, config *Config) {
 		}
 	}
 
-	// Check if PTY process is available, try to reconnect if needed
-	if sess.GetPTYProcess() == nil {
-		// Try to reconnect if we have a pts path
-		if sess.PtsPath != "" {
-			if err := sess.ReconnectPTY(); err == nil {
-				// Successfully reconnected
-			} else {
-				_, _ = fmt.Fprintf(os.Stderr, "Error: session %s has no active PTY process\n", sess.ID)
-				_, _ = fmt.Fprintf(os.Stderr, "Failed to reconnect: %v\n", err)
-				_, _ = fmt.Fprintf(os.Stderr, "The session process may have terminated\n")
-				os.Exit(1)
-			}
-		} else {
-			_, _ = fmt.Fprintf(os.Stderr, "Error: session %s has no active PTY process\n", sess.ID)
-			_, _ = fmt.Fprintf(os.Stderr, "The session may have been created in a different process\n")
-			os.Exit(1)
+	// Preferred path: attach through the session daemon, which owns the
+	// PTY master. The local-master fallback covers the creating process on
+	// platforms without daemon support and in-process test sessions.
+	if daemon.Supported() {
+		if tryAttachViaDaemon(sess, config) {
+			return
 		}
 	}
 
-	// Build attach config from main config
-	attachConfig := ui.DefaultAttachConfig()
+	attachLocally(sess, config)
+}
+
+// tryAttachViaDaemon connects to the session daemon and runs the attach UI
+// over the socket. It returns false when there is no daemon to talk to
+// (e.g. the session was created in this process).
+func tryAttachViaDaemon(sess *session.Session, config *Config) bool {
+	socketPath := session.SocketPath(sess.ID)
+	if _, err := os.Stat(socketPath); err != nil {
+		debugAttachClient("stat socket failed: %v", err)
+		return false
+	}
+	debugAttachClient("socket found, validating daemon")
+
+	if _, err := daemon.QueryStatus(socketPath); err != nil {
+		// The session may have ended between the usability check and this
+		// dial (e.g. its program exited immediately). GNU screen exits 0
+		// in that case; only report an error when the session outlives us.
+		if !sessionUsable(sess) {
+			debugAttachClient("session ended before attach: %v", err)
+			os.Exit(0)
+		}
+		_, _ = fmt.Fprintf(os.Stderr, "Error: session %s is not attachable (daemon not responding)\n", sess.ID)
+		os.Exit(1)
+	}
+
+	// Route window operations (create/switch/kill/retitle) to the daemon;
+	// the attach loop opens per-window relay connections through it.
+	ctrl := daemon.NewController(socketPath)
+	sess.Controller = ctrl
+	if win := sess.GetCurrentWindow(); win != nil {
+		proc, err := ctrl.OpenWindowProcess(win)
+		if err != nil {
+			if sessionEndedDuringAttach(sess, socketPath, err) {
+				debugAttachClient("session ended during attach: %v", err)
+				os.Exit(0)
+			}
+			_, _ = fmt.Fprintf(os.Stderr, "Error: cannot attach to session %s: %v\n", sess.ID, err)
+			os.Exit(1)
+		}
+		win.SetPTYProcess(proc)
+	}
+	debugAttachClient("remote controller installed, running attach UI")
+
+	// The daemon persists across detach, so no keeper is needed on detach.
+	runAttachUI(sess, config, nil)
+	debugAttachClient("attach UI returned")
+	return true
+}
+
+// sessionEndedDuringAttach distinguishes "the session finished while we
+// were connecting" (program exited; the daemon is tearing down and its
+// socket is already gone - GNU screen exits 0 here) from a session that
+// is alive but genuinely unreachable.
+func sessionEndedDuringAttach(sess *session.Session, socketPath string, err error) bool {
+	if os.IsNotExist(err) {
+		return true
+	}
+	// The daemon may be mid-teardown (listener closed, process not yet
+	// exited): give it a moment before declaring the session alive.
+	for i := 0; i < 8; i++ {
+		time.Sleep(50 * time.Millisecond)
+		if !sessionUsable(sess) {
+			return true
+		}
+		if _, statErr := os.Stat(socketPath); statErr != nil && os.IsNotExist(statErr) {
+			return true
+		}
+	}
+	return false
+}
+
+func debugAttachClient(format string, args ...any) {
+	if os.Getenv("SGREEN_CLIENT_DEBUG") == "" {
+		return
+	}
+	_, _ = fmt.Fprintf(os.Stderr, "client: "+format+"\n", args...)
+}
+
+// attachLocally attaches using a master fd owned by this process.
+func attachLocally(sess *session.Session, config *Config) {
+	// Check if PTY process is available
+	if sess.GetPTYProcess() == nil || sess.GetPTYProcess().Pty == nil {
+		_, _ = fmt.Fprintf(os.Stderr, "Error: session %s has no active PTY process\n", sess.ID)
+		_, _ = fmt.Fprintf(os.Stderr, "The session may have been created in a different process\n")
+		os.Exit(1)
+	}
+
 	startedKeeper := false
 	onDetach := func(detachSess *session.Session) {
 		if startedKeeper {
 			return
 		}
 		startedKeeper = true
-		startDetachKeeper(detachSess)
+		startSessionDaemon(detachSess)
 	}
+
+	runAttachUI(sess, config, onDetach)
+}
+
+// runAttachUI builds the attach configuration and runs the attach loop.
+func runAttachUI(sess *session.Session, config *Config, onDetach func(*session.Session)) {
+	attachConfig := ui.DefaultAttachConfig()
 	if config != nil {
 		// Parse command character
 		if config.CommandChar != "" {
@@ -1032,43 +1340,26 @@ func attachToSession(sess *session.Session, config *Config) {
 
 	err := ui.AttachWithConfig(os.Stdin, os.Stdout, os.Stderr, sess, attachConfig)
 	if err == nil || err == ui.ErrDetach {
-		onDetach(sess)
+		if onDetach != nil {
+			onDetach(sess)
+		}
 		return
 	}
 	_, _ = fmt.Fprintf(os.Stderr, "Error attaching to session: %v\n", err)
 	os.Exit(1)
 }
 
-func runDetachKeeperIfRequested() bool {
-	if os.Getenv("SGREEN_DETACH_KEEPER") != "1" {
-		return false
+// startSessionDaemon forks the per-session relay daemon, handing over the
+// PTY master fd. The daemon owns the master from this point on: it serves
+// attach connections, tracks the attached flag in the session file, and
+// tears everything down when the session program exits.
+func startSessionDaemon(sess *session.Session) {
+	// Platform without daemon support must not fork: the child re-runs
+	// main() (RunFromEnv is a stub there), would create another session
+	// and fork again - a process fork bomb.
+	if !daemon.Supported() {
+		return
 	}
-	debugDetachKeeper("keeper: starting")
-	fdStr := os.Getenv("SGREEN_HOLD_FD")
-	fd, err := strconv.Atoi(fdStr)
-	if err != nil || fd <= 0 {
-		debugDetachKeeper("keeper: invalid SGREEN_HOLD_FD=%q", fdStr)
-		return true
-	}
-	readyStr := os.Getenv("SGREEN_READY_FD")
-	readyFD, readyErr := strconv.Atoi(readyStr)
-	if readyErr == nil && readyFD > 0 {
-		if readyFile := os.NewFile(uintptr(readyFD), "sgreen-keeper-ready"); readyFile != nil {
-			_, _ = readyFile.Write([]byte("ready\n"))
-			_ = readyFile.Close()
-		}
-	}
-	file := os.NewFile(uintptr(fd), "sgreen-pty-master")
-	if file == nil {
-		debugDetachKeeper("keeper: failed to open fd=%d", fd)
-		return true
-	}
-	debugDetachKeeper("keeper: holding fd=%d", fd)
-	// Keep the PTY master open so detached processes do not receive SIGHUP.
-	select {}
-}
-
-func startDetachKeeper(sess *session.Session) {
 	if sess == nil {
 		return
 	}
@@ -1079,46 +1370,112 @@ func startDetachKeeper(sess *session.Session) {
 		}
 	}
 	if ptyProc == nil || ptyProc.Pty == nil {
-		debugDetachKeeper("keeper: no PTY to hold for session %q", sess.ID)
-		return
+		if runtime.GOOS != "windows" {
+			debugDetachKeeper("daemon: no PTY to hold for session %q", sess.ID)
+			return
+		}
+		// Windows: no PTY exists yet; the daemon bootstraps the program
+		// from the environment, so keep going without one.
+		ptyProc = nil
 	}
+
 	selfPath, err := os.Executable()
 	if err != nil {
-		debugDetachKeeper("keeper: failed to get executable path: %v", err)
+		debugDetachKeeper("daemon: failed to get executable path: %v", err)
 		return
 	}
 	cmd := exec.Command(selfPath)
 	readyR, readyW, err := os.Pipe()
 	if err != nil {
-		debugDetachKeeper("keeper: failed to create ready pipe: %v", err)
+		debugDetachKeeper("daemon: failed to create ready pipe: %v", err)
 		return
 	}
 	defer readyR.Close()
-	cmd.Env = append(os.Environ(),
-		"SGREEN_DETACH_KEEPER=1",
-		"SGREEN_HOLD_FD=3",
-		"SGREEN_READY_FD=4",
+
+	sessionPid := sess.Pid
+	if win := sess.GetCurrentWindow(); win != nil && win.Pid > 0 {
+		sessionPid = win.Pid
+	}
+
+	env := append(os.Environ(),
+		"SGREEN_SESSION_DAEMON=1",
+		"SGREEN_SESSION_ID="+sess.ID,
+		"SGREEN_SESSION_FILE="+session.FilePath(sess.ID),
+		"SGREEN_SESSION_SOCK="+session.SocketPath(sess.ID),
 	)
+	if runtime.GOOS != "windows" {
+		env = append(env,
+			"SGREEN_HOLD_FD=3",
+			"SGREEN_READY_FD=4",
+			"SGREEN_SESSION_PID="+strconv.Itoa(sessionPid),
+		)
+	} else {
+		// No fd handover on Windows: the daemon bootstraps the program
+		// from these variables instead.
+		argsJSON, _ := json.Marshal(cmdArgsOf(sess))
+		env = append(env,
+			"SGREEN_SESSION_CMD="+sess.CmdPath,
+			"SGREEN_SESSION_ARGS="+string(argsJSON),
+			"SGREEN_SESSION_TERM="+os.Getenv("SGREEN_SESSION_TERM"),
+		)
+	}
+	cmd.Env = env
 	cmd.Stdin = nil
 	cmd.Stdout = nil
 	cmd.Stderr = nil
-	cmd.ExtraFiles = []*os.File{ptyProc.Pty, readyW}
+	if logPath := os.Getenv("SGREEN_DAEMON_LOG"); logPath != "" {
+		if f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644); err == nil {
+			cmd.Stderr = f
+		}
+	}
+	if runtime.GOOS != "windows" {
+		cmd.ExtraFiles = []*os.File{ptyProc.Pty, readyW}
+	}
 	setDetachSysProcAttr(cmd)
 	if err := cmd.Start(); err != nil {
-		debugDetachKeeper("keeper: failed to start: %v", err)
+		debugDetachKeeper("daemon: failed to start: %v", err)
 		_ = readyW.Close()
 		return
 	}
 	_ = readyW.Close()
-	waitForKeeperReady(readyR)
-	debugDetachKeeper("keeper: started pid=%d for session %q", cmd.Process.Pid, sess.ID)
+	if runtime.GOOS != "windows" {
+		waitForKeeperReady(readyR)
+	} else {
+		waitForSocket(session.SocketPath(sess.ID), 3*time.Second)
+	}
+	sess.DaemonPid = cmd.Process.Pid
+	debugDetachKeeper("daemon: started pid=%d for session %q", cmd.Process.Pid, sess.ID)
+	// This process keeps its local master fd as a fallback (used when the
+	// daemon failed to start), but attach clients connect through the
+	// daemon socket, so no two processes ever read the master concurrently.
 }
 
 func debugDetachKeeper(format string, args ...any) {
 	if os.Getenv("SGREEN_KEEPER_DEBUG") == "" {
 		return
 	}
-	_, _ = fmt.Fprintf(os.Stderr, format+"\n", args...)
+	_, _ = fmt.Fprintf(os.Stderr, format+"\n", args)
+}
+
+// cmdArgsOf returns the session command arguments for the daemon
+// bootstrap environment.
+func cmdArgsOf(sess *session.Session) []string {
+	if len(sess.CmdArgs) == 0 {
+		return nil
+	}
+	return sess.CmdArgs
+}
+
+// waitForSocket blocks until the daemon's endpoint file exists (Windows
+// bootstrap readiness; ExtraFiles do not exist there).
+func waitForSocket(path string, timeout time.Duration) {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 }
 
 func waitForKeeperReady(readyR *os.File) {
@@ -1126,7 +1483,7 @@ func waitForKeeperReady(readyR *os.File) {
 		return
 	}
 	buf := make([]byte, 16)
-	_ = readyR.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+	_ = readyR.SetReadDeadline(time.Now().Add(2 * time.Second))
 	_, _ = readyR.Read(buf)
 }
 
@@ -1203,113 +1560,183 @@ func detectEncodingFromLocale(forceUTF8 bool) string {
 }
 
 // handleList lists all sessions.
-// Return codes follow GNU screen conventions as closely as practical:
-// 0 when sessions are listed, 1 when none are found, 8 for quiet no-session listing.
+// Output follows GNU screen: "There is a screen on:" / "There are screens
+// on:", one "\t<name>\t(<date>)\t(<status>)" entry per session, and an
+// "N Sockets in <dir>." footer. Quiet mode mirrors GNU exit codes:
+// 9 = no sessions, 10 = sessions exist but none usable, 11+n = n usable.
 func handleList(quiet bool) int {
 	allSessions := session.List()
-	sessions := listableSessions(allSessions)
 
-	if len(sessions) == 0 {
-		if quiet {
-			return 8
-		}
-		fmt.Printf("No Sockets found in %s.\n", screenSocketDirForDisplay())
-		return 1
-	}
-
+	usable, dead := splitSessionsByStatus(allSessions)
 	if quiet {
-		return 0
+		switch {
+		case len(allSessions) == 0:
+			return 9
+		case len(usable) == 0:
+			return 10
+		default:
+			return 11 + len(usable)
+		}
 	}
 
-	entries := sessionListEntries(sessions)
-	if len(entries) == 0 {
-		fmt.Printf("No Sockets found in %s.\n", screenSocketDirForDisplay())
+	if len(allSessions) == 0 {
+		fmt.Printf("No Sockets found in %s.\n\n", screenSocketDirForDisplay())
 		return 1
 	}
 
-	if len(entries) == 1 {
+	// GNU lists sockets newest-first.
+	sessionsSorted := make([]*session.Session, len(allSessions))
+	copy(sessionsSorted, allSessions)
+	sort.SliceStable(sessionsSorted, func(i, j int) bool {
+		return sessionsSorted[i].CreatedAt.After(sessionsSorted[j].CreatedAt)
+	})
+
+	if len(sessionsSorted) == 1 {
 		fmt.Println("There is a screen on:")
 	} else {
 		fmt.Println("There are screens on:")
 	}
-	for _, entry := range entries {
-		fmt.Println(entry)
+	for _, sess := range sessionsSorted {
+		fmt.Println(sessionListEntry(sess))
 	}
-	fmt.Printf("%d %s in %s.\n", len(entries), socketWord(len(entries)), screenSocketDirForDisplay())
+	if len(dead) > 0 {
+		fmt.Println("Remove dead screens with 'screen -wipe'.")
+	}
+	fmt.Printf("%d %s in %s.\n", len(sessionsSorted), socketWord(len(sessionsSorted)), screenSocketDirForDisplay())
 	return 0
 }
 
-func listableSessions(sessions []*session.Session) []*session.Session {
-	listable := make([]*session.Session, 0, len(sessions))
+// splitSessionsByStatus partitions sessions by liveness of their daemon.
+func splitSessionsByStatus(sessions []*session.Session) (usable, dead []*session.Session) {
 	for _, sess := range sessions {
 		if sess == nil {
 			continue
 		}
-		if isSessionAttached(sess) || sessionHasAliveProcess(sess) {
-			listable = append(listable, sess)
+		if sessionUsable(sess) {
+			usable = append(usable, sess)
+		} else {
+			dead = append(dead, sess)
 		}
 	}
-	return listable
+	return usable, dead
+}
+
+// sessionUsable reports whether a session can still be attached to: its
+// daemon (owner of the PTY master) is alive, or—on platforms/legacy
+// sessions without a daemon—its program is still running.
+func sessionUsable(sess *session.Session) bool {
+	if sess == nil {
+		return false
+	}
+	if sess.DaemonPid > 0 {
+		return isProcessAliveByPID(sess.DaemonPid)
+	}
+	if daemon.Supported() && sess.PtsPath != "" {
+		// Session was created before the daemon model (or daemon failed to
+		// start): the master fd is gone, so it cannot be attached.
+		return false
+	}
+	return sessionHasAliveProcess(sess)
+}
+
+// sessionDisplayName renders the GNU screen socket name form: auto-named
+// sessions are "pid.tty.host"; named sessions show as "pid.name".
+
+// resolveSessionTarget resolves a session name GNU-style: an exact ID
+// match first, then a unique prefix match. The "pid." component of
+// auto-generated IDs may be skipped, so both "be" and "12345.beta"
+// address the same session. It returns (session, candidates): when no
+// unique session resolves, candidates holds the prefix matches so the
+// caller can list them next to the GNU-style error message.
+func resolveSessionTarget(name string) (*session.Session, []*session.Session) {
+	if name == "" {
+		return nil, nil
+	}
+	if sess, err := session.Load(name); err == nil {
+		return sess, nil
+	}
+	var candidates []*session.Session
+	for _, sess := range session.List() {
+		if sess != nil && sessionNameMatches(sess, name) {
+			candidates = append(candidates, sess)
+		}
+	}
+	if len(candidates) == 1 {
+		return candidates[0], nil
+	}
+	return nil, candidates
+}
+
+// sessionNameMatches reports whether name addresses sess by prefix,
+// ignoring a leading all-digit pid component in the session ID.
+func sessionNameMatches(sess *session.Session, name string) bool {
+	if strings.HasPrefix(sess.ID, name) {
+		return true
+	}
+	if i := strings.Index(sess.ID, "."); i > 0 && isAllDigits(sess.ID[:i]) {
+		return strings.HasPrefix(sess.ID[i+1:], name)
+	}
+	return false
+}
+
+func isAllDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// printCandidateList lists sessions in the GNU style used when a target
+// name matches several (or one non-operable) session.
+func printCandidateList(candidates []*session.Session) {
+	switch len(candidates) {
+	case 0:
+		return
+	case 1:
+		fmt.Println("There is a screen on:")
+	default:
+		fmt.Println("There are screens on:")
+	}
+	printSessionList(candidates)
+}
+
+func sessionDisplayName(sess *session.Session) string {
+	pidPrefix := strconv.Itoa(sess.Pid) + "."
+	if strings.HasPrefix(sess.ID, pidPrefix) {
+		return sess.ID
+	}
+	return fmt.Sprintf("%d.%s", sess.Pid, sess.ID)
+}
+
+// sessionListEntry renders one GNU-style listing line:
+// "\t<name>\t(<date>)\t(<status>)".
+func sessionListEntry(sess *session.Session) string {
+	status := "Detached"
+	switch {
+	case !sessionUsable(sess):
+		status = "Dead ???"
+	case isSessionAttached(sess):
+		status = "Attached"
+	}
+	return fmt.Sprintf("\t%s\t(%s)\t(%s)",
+		sessionDisplayName(sess),
+		sess.CreatedAt.Format("01/02/06 15:04:05"),
+		status)
 }
 
 // printSessionList prints sessions in screen-compatible format
 func printSessionList(sessions []*session.Session) {
-	for _, entry := range sessionListEntries(sessions) {
-		fmt.Println(entry)
-	}
-}
-
-func sessionListEntries(sessions []*session.Session) []string {
-	// Screen format: "PID.TTY.HOST (Attached|Detached) DATE TIME (SESSIONNAME)"
-	nameCounts := make(map[string]int, len(sessions))
 	for _, sess := range sessions {
-		nameCounts[sess.ID]++
-	}
-
-	entries := make([]string, 0, len(sessions))
-	for _, sess := range sessions {
-		status := "Detached"
-		ptyProc := sess.GetPTYProcess()
-		if ptyProc != nil && ptyProc.IsAlive() {
-			status = "Attached"
-		} else if !sessionHasAliveProcess(sess) {
-			status = "Dead"
-		}
-		if status == "Dead" {
+		if sess == nil {
 			continue
 		}
-
-		// Format: PID.TTY (Status) DATE TIME (SESSIONNAME)
-		tty := "pts"
-		if sess.PtsPath != "" {
-			parts := strings.Split(sess.PtsPath, "/")
-			if len(parts) > 0 {
-				tty = parts[len(parts)-1]
-			}
-		}
-
-		hostname, _ := os.Hostname()
-		if hostname == "" {
-			hostname = "localhost"
-		}
-
-		dateStr := sess.CreatedAt.Format("01/02/06")
-		timeStr := sess.CreatedAt.Format("15:04:05")
-
-		displayName := sess.ID
-		pidPrefix := strconv.Itoa(sess.Pid) + "-"
-		baseName := sess.ID
-		if strings.HasPrefix(sess.ID, pidPrefix) {
-			baseName = strings.TrimPrefix(sess.ID, pidPrefix)
-		}
-		if strings.HasPrefix(sess.ID, pidPrefix) || nameCounts[sess.ID] > 1 {
-			displayName = fmt.Sprintf("%d.%s", sess.Pid, baseName)
-		}
-
-		entries = append(entries, fmt.Sprintf("\t%d.%s.%s\t(%s)\t%s %s\t(%s)",
-			sess.Pid, tty, hostname, status, dateStr, timeStr, displayName))
+		fmt.Println(sessionListEntry(sess))
 	}
-	return entries
 }
 
 func screenSocketDirForDisplay() string {
@@ -1408,6 +1835,16 @@ func resumableSessionCount(sessions []*session.Session) int {
 	return count
 }
 
+// clusteredBoolFlags are the single-dash flags that take no value and may
+// be bundled behind one dash, GNU getopt style (-Dm, -md, -Dx, ...).
+// Multi-letter flags (RR, ls, list, fn, fa, ln, dm, dmS, Logfile, ...) and
+// value-taking flags are never treated as clusters.
+var clusteredBoolFlags = map[byte]bool{
+	'd': true, 'D': true, 'm': true, 'x': true, 'q': true,
+	'a': true, 'A': true, 'U': true, 'i': true, 'v': true,
+	'l': true, 'L': true, 'O': true,
+}
+
 func normalizeArgs(args []string) []string {
 	normalized := make([]string, 0, len(args))
 	for _, arg := range args {
@@ -1416,13 +1853,29 @@ func normalizeArgs(args []string) []string {
 			normalized = append(normalized, "-d", "-m", "-S")
 		case strings.HasPrefix(arg, "-dmS") && len(arg) > 4:
 			normalized = append(normalized, "-d", "-m", "-S", arg[4:])
-		case arg == "-dm":
-			normalized = append(normalized, "-d", "-m")
+		case isClusteredBoolArg(arg):
+			for i := 1; i < len(arg); i++ {
+				normalized = append(normalized, "-"+string(arg[i]))
+			}
 		default:
 			normalized = append(normalized, arg)
 		}
 	}
 	return normalized
+}
+
+// isClusteredBoolArg reports whether arg is a "-xy..." bundle of known
+// boolean flags (length > 2 so plain "-d" stays untouched).
+func isClusteredBoolArg(arg string) bool {
+	if len(arg) <= 2 || arg[0] != '-' || arg[1] == '-' {
+		return false
+	}
+	for i := 1; i < len(arg); i++ {
+		if !clusteredBoolFlags[arg[i]] {
+			return false
+		}
+	}
+	return true
 }
 
 func requiresTerminalForOperation(reattach bool, reattachOrCreate bool, reattachOrCreateRR bool, multiuser bool, detach bool) bool {
@@ -1477,11 +1930,13 @@ func detectTTYName() string {
 	if !strings.HasPrefix(link, "/dev/") {
 		return ""
 	}
-	base := filepath.Base(link)
-	if base == "" || base == "0" || strings.HasPrefix(base, "fd") {
+	// GNU screen derives the socket tty component from the tty name with
+	// "/" replaced by "-": /dev/pts/3 -> "pts-3", /dev/tty3 -> "tty3".
+	tty := strings.TrimPrefix(link, "/dev/")
+	if tty == "" || tty == "0" || strings.HasPrefix(tty, "fd") {
 		return ""
 	}
-	return base
+	return strings.ReplaceAll(tty, "/", "-")
 }
 
 func sanitizeSessionNameComponent(s string) string {
@@ -1503,39 +1958,26 @@ func sanitizeSessionNameComponent(s string) string {
 	return strings.Trim(b.String(), "-")
 }
 
-// findDetachedSessions finds sessions that are not currently attached
+// findDetachedSessions finds usable sessions nobody is attached to
 func findDetachedSessions(sessions []*session.Session) []*session.Session {
 	var detached []*session.Session
 	for _, sess := range sessions {
-		ptyProc := sess.GetPTYProcess()
-		if ptyProc == nil || !ptyProc.IsAlive() {
-			if sessionHasAliveProcess(sess) {
-				detached = append(detached, sess)
-			}
+		if sessionUsable(sess) && !isSessionAttached(sess) {
+			detached = append(detached, sess)
 		}
 	}
 	return detached
 }
 
-// findAttachedSessions finds sessions that are currently attached
+// findAttachedSessions finds sessions that currently have a client attached
 func findAttachedSessions(sessions []*session.Session) []*session.Session {
 	var attached []*session.Session
 	for _, sess := range sessions {
-		if sess.GetPTYProcess() != nil && sess.GetPTYProcess().IsAlive() {
+		if isSessionAttached(sess) {
 			attached = append(attached, sess)
 		}
 	}
 	return attached
-}
-
-// isProcessAliveByPID checks if a process is alive by PID
-func isProcessAliveByPID(pid int) bool {
-	process, err := os.FindProcess(pid)
-	if err != nil {
-		return false
-	}
-	err = process.Signal(syscall.Signal(0))
-	return err == nil
 }
 
 func ensureInteractiveShellArgs(cmdPath string, args []string) []string {

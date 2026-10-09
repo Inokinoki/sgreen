@@ -363,11 +363,17 @@ This document tracks features from GNU screen's `man screen` that need to be imp
 ### Testing
 - 🟡 Unit tests for core functionality - added tests for window numbering and encoding helpers
 - ❌ Integration tests
-- ❌ Compatibility tests with screen
+- ✅ Compatibility tests with screen - 49 dual-run CLI use cases (test/behavior/compare_with_gnu_screen.sh), currently 0 differences against GNU screen 4.09
 - ❌ Performance tests
 - ❌ Cross-platform testing
 
+### Platform
+- ✅ Windows: ConPTY backend (internal/pty/conpty_windows.go), session daemon over loopback TCP + token handshake (internal/daemon/transport_windows.go), tree kill via taskkill; same CLI surface as Unix
+- 🟡 Windows attached resize: console size events are not signal-based; resize on window switch works, live-follow does not
+
 ### Compatibility
+- ✅ Exit-code parity verified against live GNU screen (-v/-help exit 0; -q -ls/-wipe exit 9/10/11+n; -ls/-r/-d/-D/-X error exits)
+- ✅ Output parity: "There is a screen on:"/"N Sockets in", "[pid.name detached.]", "No Sockets found in ...", dead-session listing + "Remove dead screens with 'screen -wipe'."
 - ❌ Test with common screen configurations
 - ❌ Test with screen scripts
 - ❌ Test with screen-compatible tools

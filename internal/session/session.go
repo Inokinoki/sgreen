@@ -35,6 +35,12 @@ type Session struct {
 	AllowedUsers []string       `json:"allowed_users,omitempty"`
 	Layouts      map[string]int `json:"layouts,omitempty"`
 
+	// Runtime state maintained by the session daemon (Unix). Attached is
+	// true while at least one client is attached; DaemonPid identifies the
+	// relay daemon that owns the PTY master.
+	Attached  bool `json:"attached,omitempty"`
+	DaemonPid int  `json:"daemon_pid,omitempty"`
+
 	// Window management
 	Windows       []*Window `json:"windows,omitempty"`     // All windows in this session
 	CurrentWindow int       `json:"current_window"`        // Index of current window
@@ -42,24 +48,41 @@ type Session struct {
 
 	// Runtime fields (not persisted)
 	PTYProcess *pty.PTYProcess `json:"-"` // Deprecated: use Windows[CurrentWindow] instead
-	mu         sync.RWMutex    `json:"-"`
+	// Controller, when set, routes window mutations to the session daemon
+	// that owns the PTY masters (set by the attach path; see controller.go).
+	Controller WindowController `json:"-"`
+	mu         sync.RWMutex     `json:"-"`
 }
 
 var (
-	sessionsDir string
-	sessions    = make(map[string]*Session)
-	sessionsMu  sync.RWMutex
+	sessions     = make(map[string]*Session)
+	sessionsMu   sync.RWMutex
+	sessionsDir  string
+	sessionsOnce sync.Once
 )
 
-func init() {
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		homeDir = os.TempDir()
-	}
-	sessionsDir = filepath.Join(homeDir, ".sgreen", "sessions")
-	if err := os.MkdirAll(sessionsDir, 0755); err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "warning: failed to create sessions directory: %v\n", err)
-	}
+// dir returns the on-disk sessions directory, creating it on first use.
+// Initialization is lazy so tests can point HOME at a scratch directory
+// before touching any session API (the old package-level init() captured
+// HOME at process start, which made test isolation impossible).
+func dir() string {
+	sessionsOnce.Do(func() {
+		// GNU screen relocates its sockets via $SCREENDIR; honor it so the
+		// directory sgreen actually uses matches what -ls reports.
+		if screenDir := os.Getenv("SCREENDIR"); screenDir != "" {
+			sessionsDir = screenDir
+		} else {
+			homeDir, err := os.UserHomeDir()
+			if err != nil {
+				homeDir = os.TempDir()
+			}
+			sessionsDir = filepath.Join(homeDir, ".sgreen", "sessions")
+		}
+		if err := os.MkdirAll(sessionsDir, 0755); err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "warning: failed to create sessions directory: %v\n", err)
+		}
+	})
+	return sessionsDir
 }
 
 // CurrentUser returns the current username for permission checks.
@@ -136,8 +159,10 @@ func NewWithConfig(id, cmdPath string, args []string, config *Config) (*Session,
 		envOverrides["TERM"] = "screen"
 	}
 
-	// Start PTY process with environment overrides
-	ptyProc, err := pty.StartWithEnv(cmdPath, args, envOverrides)
+	// Start PTY process with environment overrides. On Windows this
+	// returns nil, nil: no fd inheritance exists there, so the session
+	// daemon (forked next) starts the program itself.
+	ptyProc, err := startSessionPTY(cmdPath, args, envOverrides)
 	if err != nil {
 		return nil, fmt.Errorf("failed to start PTY: %w", err)
 	}
@@ -160,14 +185,20 @@ func NewWithConfig(id, cmdPath string, args []string, config *Config) (*Session,
 	if config != nil && config.Scrollback > 0 {
 		scrollbackSize = config.Scrollback
 	}
+	windowPid := 0
+	windowPts := ""
+	if ptyProc != nil && ptyProc.Cmd != nil && ptyProc.Cmd.Process != nil {
+		windowPid = ptyProc.Cmd.Process.Pid
+		windowPts = ptyProc.PtsPath
+	}
 	window := &Window{
 		ID:             0,
 		Number:         "0",
 		Title:          "",
 		CmdPath:        cmdPath,
 		CmdArgs:        args,
-		Pid:            ptyProc.Cmd.Process.Pid,
-		PtsPath:        ptyProc.PtsPath,
+		Pid:            windowPid,
+		PtsPath:        windowPts,
 		CreatedAt:      time.Now(),
 		ScrollbackSize: scrollbackSize,
 		Encoding:       encoding,
@@ -179,8 +210,8 @@ func NewWithConfig(id, cmdPath string, args []string, config *Config) (*Session,
 		ID:            id,
 		CmdPath:       cmdPath,
 		CmdArgs:       args,
-		Pid:           ptyProc.Cmd.Process.Pid,
-		PtsPath:       ptyProc.PtsPath, // Store PTY path for reconnection (backward compat)
+		Pid:           windowPid,
+		PtsPath:       windowPts,
 		CreatedAt:     time.Now(),
 		Owner:         CurrentUser(),
 		Windows:       []*Window{window},
@@ -196,7 +227,9 @@ func NewWithConfig(id, cmdPath string, args []string, config *Config) (*Session,
 	if err := sess.save(); err != nil {
 		// Clean up on error
 		delete(sessions, id)
-		_ = ptyProc.Kill()
+		if ptyProc != nil {
+			_ = ptyProc.Kill()
+		}
 		return nil, fmt.Errorf("failed to save session: %w", err)
 	}
 
@@ -209,18 +242,6 @@ func Load(id string) (*Session, error) {
 	// Check in-memory first
 	if sess, exists := sessions[id]; exists {
 		sessionsMu.RUnlock()
-		// Check if the process is still alive
-		if sess.PTYProcess != nil && !sess.PTYProcess.IsAlive() {
-			// Process died, try to reconnect if we have a pts path
-			if sess.PtsPath != "" {
-				sessionsMu.Lock()
-				if err := sess.ReconnectPTY(); err == nil {
-					sessionsMu.Unlock()
-					return sess, nil
-				}
-				sessionsMu.Unlock()
-			}
-		}
 		return sess, nil
 	}
 	sessionsMu.RUnlock()
@@ -231,49 +252,15 @@ func Load(id string) (*Session, error) {
 		return nil, err
 	}
 
-	// Try to reconnect to the PTY if we have a path and process is still alive
-	if sess.PtsPath != "" && isProcessAlive(sess.Pid) {
-		if err := sess.ReconnectPTY(); err != nil {
-			_ = err
-		}
-	}
+	// NOTE: the PTY master is owned by the session daemon; clients attach
+	// through the daemon socket. Opening the slave device here would
+	// corrupt the terminal line discipline, so no PTY reconnect happens.
 
 	sessionsMu.Lock()
 	sessions[id] = sess
 	sessionsMu.Unlock()
 
 	return sess, nil
-}
-
-// ReconnectPTY attempts to reconnect to an existing PTY
-func (s *Session) ReconnectPTY() error {
-	if s.PtsPath == "" {
-		return fmt.Errorf("no PTY path available")
-	}
-
-	ptyProc, err := pty.Reconnect(s.PtsPath)
-	if err != nil {
-		return fmt.Errorf("failed to reconnect to PTY: %w", err)
-	}
-
-	s.mu.Lock()
-	s.PTYProcess = ptyProc
-	s.mu.Unlock()
-
-	return nil
-}
-
-// isProcessAlive checks if a process with the given PID is still running
-func isProcessAlive(pid int) bool {
-	process, err := os.FindProcess(pid)
-	if err != nil {
-		return false
-	}
-
-	// Send signal 0 to check if process exists
-	// This doesn't actually send a signal, just checks if the process exists
-	err = process.Signal(os.Signal(syscall.Signal(0)))
-	return err == nil
 }
 
 // detectEncodingFromLocale detects encoding from locale environment variables.
@@ -344,37 +331,15 @@ func List() []*Session {
 
 	// Add memory sessions first
 	for _, sess := range memorySessions {
-		// Clean up dead sessions
-		if sess.PTYProcess != nil && !sess.PTYProcess.IsAlive() {
-			// Try to reconnect if we have a pts path
-			if sess.PtsPath != "" && isProcessAlive(sess.Pid) {
-				if err := sess.ReconnectPTY(); err != nil {
-					_ = err
-				}
-			}
-		}
 		result = append(result, sess)
 		seen[sess.ID] = true
 	}
 
-	// Add disk sessions that aren't in memory
+	// Add disk sessions that aren't in memory. The PTY master belongs to
+	// the session daemon; cross-process attach goes through the daemon
+	// socket, so there is nothing to reconnect here.
 	for _, sess := range diskSessions {
 		if !seen[sess.ID] {
-			// Try to reconnect windows if processes are still alive
-			hasAliveWindow := false
-			for _, win := range sess.Windows {
-				if win.PtsPath != "" && isProcessAlive(win.Pid) {
-					if err := sess.ReconnectPTY(); err == nil {
-						hasAliveWindow = true
-					}
-				}
-			}
-			// Also try old method for backward compatibility
-			if !hasAliveWindow && sess.PtsPath != "" && isProcessAlive(sess.Pid) {
-				if err := sess.ReconnectPTY(); err != nil {
-					_ = err
-				}
-			}
 			result = append(result, sess)
 		}
 	}
@@ -385,7 +350,7 @@ func List() []*Session {
 
 // loadAllFromDisk loads all session files from disk
 func loadAllFromDisk() ([]*Session, error) {
-	entries, err := os.ReadDir(sessionsDir)
+	entries, err := os.ReadDir(dir())
 	if err != nil {
 		return nil, err
 	}
@@ -413,9 +378,9 @@ func (s *Session) save() error {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	filePath := filepath.Join(sessionsDir, s.ID+".json")
+	filePath := filepath.Join(dir(), s.ID+".json")
 	// Ensure sessions directory exists
-	if err := os.MkdirAll(sessionsDir, 0755); err != nil {
+	if err := os.MkdirAll(dir(), 0755); err != nil {
 		if isResourceExhausted(err) {
 			return fmt.Errorf("resource exhaustion while creating sessions directory: %w", err)
 		}
@@ -450,7 +415,7 @@ func (s *Session) save() error {
 
 // loadFromDisk loads a session from disk
 func loadFromDisk(id string) (*Session, error) {
-	filePath := filepath.Join(sessionsDir, id+".json")
+	filePath := filepath.Join(dir(), id+".json")
 	data, err := os.ReadFile(filePath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -482,110 +447,79 @@ func loadFromDisk(id string) (*Session, error) {
 	return &sess, nil
 }
 
-// Delete removes a session from memory and disk
+// SocketPath returns the daemon socket path for a session ID.
+func SocketPath(id string) string {
+	return filepath.Join(dir(), id+".sock")
+}
+
+// FilePath returns the JSON session file path for a session ID.
+func FilePath(id string) string {
+	return filepath.Join(dir(), id+".json")
+}
+
+// LoadFromFile loads a session from an explicit file path without
+// consulting or populating the in-memory registry. Used by the session
+// daemon, which owns the runtime fields of its session file.
+func LoadFromFile(path, id string) (*Session, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var sess Session
+	if err := json.Unmarshal(data, &sess); err != nil {
+		return nil, err
+	}
+	if sess.ID == "" {
+		sess.ID = id
+	}
+	return &sess, nil
+}
+
+// RemoveFile deletes the session file and socket for a session that is
+// being torn down by its daemon.
+func RemoveFile(path, id string) error {
+	_ = os.Remove(SocketPath(id))
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	sessionsMu.Lock()
+	delete(sessions, id)
+	sessionsMu.Unlock()
+	return nil
+}
+
+// Delete removes a session from memory and disk. For sessions owned by
+// another process (disk-only), this removes the files without touching the
+// owning processes; use the daemon QUIT command to terminate a live
+// session cleanly.
 func Delete(id string) error {
 	sessionsMu.Lock()
-	defer sessionsMu.Unlock()
-
 	sess, exists := sessions[id]
-	if !exists {
-		return fmt.Errorf("session %s not found", id)
+	if exists {
+		delete(sessions, id)
 	}
+	sessionsMu.Unlock()
 
-	// Kill all processes in all windows
-	for _, win := range sess.Windows {
-		if win.GetPTYProcess() != nil {
-			_ = win.GetPTYProcess().Kill()
+	if exists {
+		// Locally-owned session: kill all processes in all windows.
+		for _, win := range sess.Windows {
+			if win.GetPTYProcess() != nil {
+				_ = win.GetPTYProcess().Kill()
+			}
+		}
+		// Also kill legacy PTY process if exists.
+		if sess.PTYProcess != nil {
+			_ = sess.PTYProcess.Kill()
 		}
 	}
 
-	// Also kill legacy PTY process if exists
-	if sess.PTYProcess != nil {
-		_ = sess.PTYProcess.Kill()
-	}
-
-	// Remove from memory
-	delete(sessions, id)
-
-	// Remove from disk
-	filePath := filepath.Join(sessionsDir, id+".json")
-	if err := os.Remove(filePath); err != nil && !os.IsNotExist(err) {
+	// Remove from disk (session file and daemon socket).
+	if err := os.Remove(filepath.Join(dir(), id+".json")); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("failed to remove session file: %w", err)
 	}
+	_ = os.Remove(SocketPath(id))
 
 	return nil
-}
-
-// CleanupOrphanedProcesses cleans up orphaned processes from dead sessions
-func CleanupOrphanedProcesses() error {
-	sessionsMu.Lock()
-	defer sessionsMu.Unlock()
-
-	// Get all sessions from disk
-	diskSessions, err := loadAllFromDisk()
-	if err != nil {
-		// If we can't read from disk, try to clean up from memory
-		for _, sess := range sessions {
-			cleanupSessionOrphans(sess)
-		}
-		return nil
-	}
-
-	// Check each session
-	for _, sess := range diskSessions {
-		// Check if session is in memory
-		if _, inMemory := sessions[sess.ID]; !inMemory {
-			// Session not in memory, check if processes are orphaned
-			hasAliveProcess := false
-
-			// Check windows
-			for _, win := range sess.Windows {
-				if win.PtsPath != "" && isProcessAlive(win.Pid) {
-					hasAliveProcess = true
-					// Try to kill orphaned process
-					if proc, err := os.FindProcess(win.Pid); err == nil {
-						_ = proc.Kill()
-					}
-				}
-			}
-
-			// Check legacy PTY
-			if sess.PtsPath != "" && isProcessAlive(sess.Pid) {
-				hasAliveProcess = true
-				if proc, err := os.FindProcess(sess.Pid); err == nil {
-					_ = proc.Kill()
-				}
-			}
-
-			// If no alive processes, remove session file
-			if !hasAliveProcess {
-				filePath := filepath.Join(sessionsDir, sess.ID+".json")
-				_ = os.Remove(filePath)
-			}
-		}
-	}
-
-	return nil
-}
-
-// cleanupSessionOrphans cleans up orphaned processes for a session
-func cleanupSessionOrphans(sess *Session) {
-	// Clean up dead windows
-	for _, win := range sess.Windows {
-		if win.GetPTYProcess() != nil && !win.GetPTYProcess().IsAlive() {
-			// Process is dead, try to kill it anyway to be sure
-			if proc, err := os.FindProcess(win.Pid); err == nil {
-				_ = proc.Kill()
-			}
-		}
-	}
-
-	// Clean up legacy PTY
-	if sess.PTYProcess != nil && !sess.PTYProcess.IsAlive() {
-		if proc, err := os.FindProcess(sess.Pid); err == nil {
-			_ = proc.Kill()
-		}
-	}
 }
 
 // GetPTYProcess returns the PTY process for this session
@@ -633,6 +567,20 @@ func (s *Session) GetWindow(number string) *Window {
 
 // CreateWindow creates a new window in the session
 func (s *Session) CreateWindow(cmdPath string, args []string, config *Config) (*Window, error) {
+	if s.Controller != nil {
+		term := ""
+		if config != nil {
+			term = config.Term
+		}
+		if _, err := s.Controller.CreateWindow(cmdPath, args, term); err != nil {
+			return nil, err
+		}
+		if err := s.RefreshFromDisk(); err != nil {
+			return nil, err
+		}
+		return s.GetCurrentWindow(), nil
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -707,6 +655,13 @@ func (s *Session) CreateWindow(cmdPath string, args []string, config *Config) (*
 
 // SwitchToWindow switches to a window by number
 func (s *Session) SwitchToWindow(number string) error {
+	if s.Controller != nil {
+		if _, err := s.Controller.SwitchWindow("select", number); err != nil {
+			return err
+		}
+		return s.RefreshFromDisk()
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -735,6 +690,12 @@ func (s *Session) SwitchToWindow(number string) error {
 
 // NextWindow switches to the next window
 func (s *Session) NextWindow() {
+	if s.Controller != nil {
+		_, _ = s.Controller.SwitchWindow("next", "")
+		_ = s.RefreshFromDisk()
+		return
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if len(s.Windows) == 0 {
@@ -746,6 +707,12 @@ func (s *Session) NextWindow() {
 
 // PrevWindow switches to the previous window
 func (s *Session) PrevWindow() {
+	if s.Controller != nil {
+		_, _ = s.Controller.SwitchWindow("prev", "")
+		_ = s.RefreshFromDisk()
+		return
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if len(s.Windows) == 0 {
@@ -757,6 +724,12 @@ func (s *Session) PrevWindow() {
 
 // ToggleLastWindow switches to the last window
 func (s *Session) ToggleLastWindow() {
+	if s.Controller != nil {
+		_, _ = s.Controller.SwitchWindow("toggle", "")
+		_ = s.RefreshFromDisk()
+		return
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if len(s.Windows) == 0 {
@@ -767,6 +740,17 @@ func (s *Session) ToggleLastWindow() {
 
 // KillCurrentWindow kills the current window
 func (s *Session) KillCurrentWindow() error {
+	if s.Controller != nil {
+		win := s.GetCurrentWindow()
+		if win == nil {
+			return fmt.Errorf("no current window")
+		}
+		if err := s.Controller.KillWindow(win.ID); err != nil {
+			return err
+		}
+		return s.RefreshFromDisk()
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -806,6 +790,14 @@ func (s *Session) KillCurrentWindow() error {
 
 // SetWindowTitle sets the title of the current window
 func (s *Session) SetWindowTitle(title string) {
+	if s.Controller != nil {
+		if win := s.GetCurrentWindow(); win != nil {
+			win.Title = title // immediate local echo for the UI
+			_ = s.Controller.SetTitle(win.ID, title)
+		}
+		return
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if len(s.Windows) > 0 && s.CurrentWindow < len(s.Windows) {
@@ -840,8 +832,8 @@ func (s *Session) Rename(newID string) error {
 	sessionsMu.RUnlock()
 
 	oldID := s.ID
-	oldPath := filepath.Join(sessionsDir, oldID+".json")
-	newPath := filepath.Join(sessionsDir, newID+".json")
+	oldPath := filepath.Join(dir(), oldID+".json")
+	newPath := filepath.Join(dir(), newID+".json")
 
 	// Update in-memory map
 	sessionsMu.Lock()
@@ -866,16 +858,6 @@ func (s *Session) Rename(newID string) error {
 
 	// Save updated session
 	return s.save()
-}
-
-// ForceDetach forces a detach by clearing the PTY process reference
-// This allows the session to be reattached from another terminal
-func (s *Session) ForceDetach() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	// Clear the PTY process reference but keep the session alive
-	// The process continues running, we just lose the reference
-	s.PTYProcess = nil
 }
 
 // Save persists session to disk.

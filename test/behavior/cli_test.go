@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 var (
@@ -52,7 +53,11 @@ func ensureSgreenBinary(tb testing.TB) string {
 			return
 		}
 
-		outPath := filepath.Join(tmpDir, "sgreen")
+		binName := "sgreen"
+		if runtime.GOOS == "windows" {
+			binName = "sgreen.exe"
+		}
+		outPath := filepath.Join(tmpDir, binName)
 		buildCmd := exec.Command("go", "build", "-o", outPath, "./cmd/sgreen")
 		buildCmd.Dir = modRoot
 		buildCmd.Env = os.Environ()
@@ -92,8 +97,16 @@ func runSgreen(tb testing.TB, args []string, extraEnv map[string]string) (output
 	homeDir := tb.TempDir()
 	env := os.Environ()
 	env = setEnv(env, "HOME", homeDir)
+	// os.UserHomeDir reads USERPROFILE (not HOME) on Windows.
+	env = setEnv(env, "USERPROFILE", homeDir)
 	for k, v := range extraEnv {
 		env = setEnv(env, k, v)
+	}
+	// When a test overrides HOME (e.g. with synthetic session files),
+	// USERPROFILE must follow: os.UserHomeDir reads it on Windows and a
+	// stale value would point the binary at an empty directory.
+	if extraEnv["HOME"] != "" && extraEnv["USERPROFILE"] == "" {
+		env = setEnv(env, "USERPROFILE", extraEnv["HOME"])
 	}
 	cmd.Env = env
 
@@ -111,6 +124,9 @@ func runSgreen(tb testing.TB, args []string, extraEnv map[string]string) (output
 
 func runSgreenWithPTY(tb testing.TB, args []string, extraEnv map[string]string) (output string, exitCode int) {
 	tb.Helper()
+	if runtime.GOOS == "windows" {
+		tb.Skip("PTY-backed scenarios need script(1) and /bin/sh; not available on Windows")
+	}
 	baseCmd := sgreenCmd(tb, args)
 	homeDir := tb.TempDir()
 	env := os.Environ()
@@ -186,8 +202,8 @@ func writeSessionFile(tb testing.TB, homeDir, id string, pid int) {
 
 func TestVersion(t *testing.T) {
 	out, code := runSgreen(t, []string{"-v"}, nil)
-	if code != 1 {
-		t.Fatalf("sgreen -v: exit code %d, want 1 (GNU screen style)\n%s", code, out)
+	if code != 0 {
+		t.Fatalf("sgreen -v: exit code %d, want 0 (GNU screen style)\n%s", code, out)
 	}
 	if !strings.Contains(out, "sgreen") || !strings.Contains(out, "version") {
 		t.Fatalf("sgreen -v: output should contain 'sgreen' and 'version'\n%s", out)
@@ -196,8 +212,8 @@ func TestVersion(t *testing.T) {
 
 func TestHelpShort(t *testing.T) {
 	out, code := runSgreen(t, []string{"-help"}, nil)
-	if code != 1 {
-		t.Fatalf("sgreen -help: exit code %d, want 1\n%s", code, out)
+	if code != 0 {
+		t.Fatalf("sgreen -help: exit code %d, want 0 (GNU screen style)\n%s", code, out)
 	}
 	if !strings.Contains(out, "Usage:") || !strings.Contains(out, "sgreen") {
 		t.Fatalf("sgreen -help: output should contain 'Usage:' and 'sgreen'\n%s", out)
@@ -206,8 +222,8 @@ func TestHelpShort(t *testing.T) {
 
 func TestHelpLong(t *testing.T) {
 	out, code := runSgreen(t, []string{"-help"}, nil)
-	if code != 1 {
-		t.Fatalf("sgreen -help: exit code %d, want 1\n%s", code, out)
+	if code != 0 {
+		t.Fatalf("sgreen -help: exit code %d, want 0 (GNU screen style)\n%s", code, out)
 	}
 	if !strings.Contains(out, "Usage:") {
 		t.Fatalf("sgreen -help: output should contain 'Usage:'\n%s", out)
@@ -287,8 +303,8 @@ func TestWipeNoSessions(t *testing.T) {
 
 func TestQuietWipeNoSessions(t *testing.T) {
 	out, code := runSgreen(t, []string{"-q", "-wipe"}, nil)
-	if code != 8 {
-		t.Fatalf("sgreen -q -wipe: exit code %d, want 8 (GNU screen quiet no-sessions)\n%s", code, out)
+	if code != 9 {
+		t.Fatalf("sgreen -q -wipe: exit code %d, want 9 (GNU screen quiet no-sessions)\n%s", code, out)
 	}
 	if strings.TrimSpace(out) != "" {
 		t.Fatalf("sgreen -q -wipe: expected no output, got %q", out)
@@ -333,6 +349,9 @@ func TestPowerDetachNamedSessionNoSessions(t *testing.T) {
 }
 
 func TestPowerDetachNamedSessionWithCommandNoSessions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("needs /bin/sh")
+	}
 	out, code := runSgreen(t, []string{"-D", "nosuch", "/bin/sh", "-c", "echo hi"}, nil)
 	if code == 0 {
 		t.Fatalf("sgreen -D nosuch /bin/sh -c 'echo hi': exit code 0, want non-zero when no sessions\n%s", out)
@@ -347,6 +366,9 @@ func TestPowerDetachNamedSessionWithCommandNoSessions(t *testing.T) {
 }
 
 func TestPowerDetachNoForkDetachedStart(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("needs /bin/sh")
+	}
 	out, code := runSgreen(t, []string{"-D", "-m", "-S", "dmcase", "/bin/sh", "-c", "exit 0"}, nil)
 	if code != 0 {
 		t.Fatalf("sgreen -D -m -S dmcase /bin/sh -c 'exit 0': exit code %d, want 0\n%s", code, out)
@@ -378,8 +400,8 @@ func TestUnknownFlag(t *testing.T) {
 
 func TestQuiet(t *testing.T) {
 	out, code := runSgreen(t, []string{"-q", "-ls"}, nil)
-	if code != 8 {
-		t.Fatalf("sgreen -q -ls: exit code %d, want 8 (GNU screen quiet no-sessions)\n%s", code, out)
+	if code != 9 {
+		t.Fatalf("sgreen -q -ls: exit code %d, want 9 (GNU screen quiet no-sessions)\n%s", code, out)
 	}
 	if strings.TrimSpace(out) != "" {
 		t.Fatalf("sgreen -q -ls: expected no output, got %q", out)
@@ -396,8 +418,8 @@ func TestIgnoreSTY(t *testing.T) {
 
 func TestVersionSingleLine(t *testing.T) {
 	out, code := runSgreen(t, []string{"-v"}, nil)
-	if code != 1 {
-		t.Fatalf("sgreen -v: exit code %d, want 1\n%s", code, out)
+	if code != 0 {
+		t.Fatalf("sgreen -v: exit code %d, want 0 (GNU screen style)\n%s", code, out)
 	}
 	lines := strings.Split(strings.TrimSpace(out), "\n")
 	if len(lines) != 1 {
@@ -409,8 +431,8 @@ func TestVersionSingleLine(t *testing.T) {
 
 func TestVersionContainsVersionNumber(t *testing.T) {
 	out, code := runSgreen(t, []string{"-v"}, nil)
-	if code != 1 {
-		t.Fatalf("sgreen -v: exit code %d, want 1\n%s", code, out)
+	if code != 0 {
+		t.Fatalf("sgreen -v: exit code %d, want 0 (GNU screen style)\n%s", code, out)
 	}
 	if !strings.Contains(out, "Screen version ") || !strings.Contains(out, " (sgreen)") {
 		t.Fatalf("sgreen -v: output should contain screen-style version token\n%s", out)
@@ -419,8 +441,8 @@ func TestVersionContainsVersionNumber(t *testing.T) {
 
 func TestVersionFormatScreenStyle(t *testing.T) {
 	out, code := runSgreen(t, []string{"-v"}, nil)
-	if code != 1 {
-		t.Fatalf("sgreen -v: exit code %d, want 1\n%s", code, out)
+	if code != 0 {
+		t.Fatalf("sgreen -v: exit code %d, want 0 (GNU screen style)\n%s", code, out)
 	}
 	if !strings.Contains(out, "Screen version") {
 		t.Fatalf("sgreen -v: expected screen-style version prefix\n%s", out)
@@ -429,8 +451,8 @@ func TestVersionFormatScreenStyle(t *testing.T) {
 
 func TestHelpContainsKeyOptions(t *testing.T) {
 	out, code := runSgreen(t, []string{"-help"}, nil)
-	if code != 1 {
-		t.Fatalf("sgreen -help: exit code %d, want 1\n%s", code, out)
+	if code != 0 {
+		t.Fatalf("sgreen -help: exit code %d, want 0 (GNU screen style)\n%s", code, out)
 	}
 	for _, sub := range []string{"-r", "-R", "-ls", "-d", "-D", "-S"} {
 		if !strings.Contains(out, sub) {
@@ -441,8 +463,8 @@ func TestHelpContainsKeyOptions(t *testing.T) {
 
 func TestHelpMentionsDetach(t *testing.T) {
 	out, code := runSgreen(t, []string{"-help"}, nil)
-	if code != 1 {
-		t.Fatalf("sgreen -help: exit code %d, want 1\n%s", code, out)
+	if code != 0 {
+		t.Fatalf("sgreen -help: exit code %d, want 0 (GNU screen style)\n%s", code, out)
 	}
 	if !strings.Contains(out, "detach") && !strings.Contains(out, "Detach") &&
 		!strings.Contains(out, "Ctrl+A") && !strings.Contains(out, "C-a") {
@@ -651,8 +673,12 @@ func TestListSingleSessionShowsScreenStyleSummary(t *testing.T) {
 	if !strings.Contains(out, "There is a screen on:") {
 		t.Fatalf("sgreen -ls with one session: expected 'There is a screen on:'\n%s", out)
 	}
-	if !strings.Contains(out, "(demo)") {
-		t.Fatalf("sgreen -ls with one session: expected session name '(demo)'\n%s", out)
+	// GNU listing format: first column is the socket name pid.<name>.
+	if !strings.Contains(out, fmt.Sprintf("%d.demo", os.Getpid())) {
+		t.Fatalf("sgreen -ls with one session: expected socket name '%d.demo'\n%s", os.Getpid(), out)
+	}
+	if !strings.Contains(out, "(Detached)") {
+		t.Fatalf("sgreen -ls with one session: expected '(Detached)' status\n%s", out)
 	}
 	if !strings.Contains(out, "1 Socket in ") {
 		t.Fatalf("sgreen -ls with one session: expected socket summary line\n%s", out)
@@ -660,6 +686,9 @@ func TestListSingleSessionShowsScreenStyleSummary(t *testing.T) {
 }
 
 func TestDetachedCreateDmSParses(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("needs /bin/sh")
+	}
 	out, code := runSgreen(t, []string{"-dmS", "demo", "/bin/sh", "-c", "sleep 1"}, nil)
 	if code != 0 {
 		t.Fatalf("sgreen -dmS demo ...: exit code %d, want 0\n%s", code, out)
@@ -670,11 +699,102 @@ func TestDetachedCreateDmSParses(t *testing.T) {
 }
 
 func TestShortHRequiresArgument(t *testing.T) {
+	// Verified against GNU screen 4.09: bare "-h" prints usage and exits 0
+	// (-h num still parses its scrollback value when present).
 	out, code := runSgreen(t, []string{"-h"}, nil)
-	if code == 0 {
-		t.Fatalf("sgreen -h: exit code 0, want non-zero because -h expects scrollback value\n%s", out)
+	if code != 0 {
+		t.Fatalf("sgreen -h: exit code %d, want 0 (GNU screen style)\n%s", code, out)
 	}
 	if !strings.Contains(out, "Use:") && !strings.Contains(out, "Usage:") {
 		t.Fatalf("sgreen -h: expected usage output\n%s", out)
+	}
+}
+
+// --- Session target resolution (GNU-style prefix matching) ---
+
+func TestSessionPrefixMatching(t *testing.T) {
+	homeDir := t.TempDir()
+	writeSessionFile(t, homeDir, "alpha", os.Getpid())
+	writeSessionFile(t, homeDir, "alex", os.Getpid())
+	writeSessionFile(t, homeDir, "beta", os.Getpid())
+
+	// Unique prefix resolves; GNU reports the candidate when it cannot
+	// detach (the synthetic sessions are detached).
+	out, code := runSgreen(t, []string{"-d", "alp"}, map[string]string{"HOME": homeDir})
+	if code != 1 {
+		t.Fatalf("sgreen -d alp: exit code %d, want 1\n%s", code, out)
+	}
+	if !strings.Contains(out, "There is a screen on:") ||
+		!strings.Contains(out, ".alpha") || strings.Contains(out, ".alex") {
+		t.Fatalf("sgreen -d alp should list only alpha:\n%s", out)
+	}
+	if !strings.Contains(out, "There is no screen to be detached matching alp.") {
+		t.Fatalf("sgreen -d alp missing GNU message:\n%s", out)
+	}
+
+	// Ambiguous prefix lists every candidate.
+	out, code = runSgreen(t, []string{"-d", "al"}, map[string]string{"HOME": homeDir})
+	if code != 1 {
+		t.Fatalf("sgreen -d al: exit code %d, want 1\n%s", code, out)
+	}
+	if !strings.Contains(out, "There are screens on:") ||
+		!strings.Contains(out, ".alpha") || !strings.Contains(out, ".alex") {
+		t.Fatalf("sgreen -d al should list alpha and alex:\n%s", out)
+	}
+	if !strings.Contains(out, "There is no screen to be detached matching al.") {
+		t.Fatalf("sgreen -d al missing GNU message:\n%s", out)
+	}
+
+	// No match: plain GNU failure message.
+	out, code = runSgreen(t, []string{"-d", "zzz"}, map[string]string{"HOME": homeDir})
+	if code != 1 || !strings.Contains(out, "There is no screen to be detached matching zzz.") {
+		t.Fatalf("sgreen -d zzz mismatch: code=%d\n%s", code, out)
+	}
+}
+
+func TestListOrdersNewestFirst(t *testing.T) {
+	homeDir := t.TempDir()
+	writeSessionFile(t, homeDir, "older", os.Getpid())
+	// Give the second file a newer mtime and a newer created_at.
+	sessionsDir := filepath.Join(homeDir, ".sgreen", "sessions")
+	newer := filepath.Join(sessionsDir, "newer.json")
+	if err := os.WriteFile(newer, []byte(fmt.Sprintf(`{"id":"newer","pid":%d,"created_at":"2099-01-01T00:00:00Z"}`, os.Getpid())), 0o644); err != nil {
+		t.Fatalf("write newer.json: %v", err)
+	}
+
+	out, code := runSgreen(t, []string{"-ls"}, map[string]string{"HOME": homeDir})
+	if code != 0 {
+		t.Fatalf("sgreen -ls: exit code %d, want 0\n%s", code, out)
+	}
+	if strings.Index(out, ".newer") > strings.Index(out, ".older") {
+		t.Fatalf("sgreen -ls should list newest first:\n%s", out)
+	}
+}
+
+// --- Clustered boolean flags ---
+
+func TestClusteredBoolFlags(t *testing.T) {
+	// -Dm expands to -D -m (detached no-fork create); a fast-exiting
+	// command must succeed and leave no session behind.
+	homeDir := t.TempDir()
+	if runtime.GOOS == "windows" {
+		t.Skip("needs /bin/sh")
+	}
+	out, code := runSgreen(t, []string{"-Dm", "-S", "clu", "/bin/sh", "-c", "exit 0"}, map[string]string{"HOME": homeDir})
+	if code != 0 {
+		t.Fatalf("sgreen -Dm -S clu: exit code %d, want 0\n%s", code, out)
+	}
+	// The daemon tears the session down asynchronously after the program
+	// exits; poll instead of asserting immediately (flaky on slow CI).
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		out, _ = runSgreen(t, []string{"-ls"}, map[string]string{"HOME": homeDir})
+		if !strings.Contains(out, "clu") {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("session should be gone after command exit:\n%s", out)
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 }
