@@ -108,6 +108,9 @@ func (p *PTYProcess) SetSize(rows, cols uint16) error {
 	if p.remote != nil {
 		return p.remote.Resize(rows, cols)
 	}
+	if p.conptyResizer != nil {
+		return p.conptyResizer(rows, cols)
+	}
 	return p.setLocalSize(rows, cols)
 }
 

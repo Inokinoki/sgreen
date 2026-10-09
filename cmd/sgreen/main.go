@@ -1210,7 +1210,7 @@ func tryAttachViaDaemon(sess *session.Session, config *Config) bool {
 	if win := sess.GetCurrentWindow(); win != nil {
 		proc, err := ctrl.OpenWindowProcess(win)
 		if err != nil {
-			if !sessionUsable(sess) {
+			if sessionEndedDuringAttach(sess, socketPath, err) {
 				debugAttachClient("session ended during attach: %v", err)
 				os.Exit(0)
 			}
@@ -1225,6 +1225,28 @@ func tryAttachViaDaemon(sess *session.Session, config *Config) bool {
 	runAttachUI(sess, config, nil)
 	debugAttachClient("attach UI returned")
 	return true
+}
+
+// sessionEndedDuringAttach distinguishes "the session finished while we
+// were connecting" (program exited; the daemon is tearing down and its
+// socket is already gone - GNU screen exits 0 here) from a session that
+// is alive but genuinely unreachable.
+func sessionEndedDuringAttach(sess *session.Session, socketPath string, err error) bool {
+	if os.IsNotExist(err) {
+		return true
+	}
+	// The daemon may be mid-teardown (listener closed, process not yet
+	// exited): give it a moment before declaring the session alive.
+	for i := 0; i < 8; i++ {
+		time.Sleep(50 * time.Millisecond)
+		if !sessionUsable(sess) {
+			return true
+		}
+		if _, statErr := os.Stat(socketPath); statErr != nil && os.IsNotExist(statErr) {
+			return true
+		}
+	}
+	return false
 }
 
 func debugAttachClient(format string, args ...any) {

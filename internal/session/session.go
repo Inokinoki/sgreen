@@ -263,19 +263,6 @@ func Load(id string) (*Session, error) {
 	return sess, nil
 }
 
-// isProcessAlive checks if a process with the given PID is still running
-func isProcessAlive(pid int) bool {
-	process, err := os.FindProcess(pid)
-	if err != nil {
-		return false
-	}
-
-	// Send signal 0 to check if process exists
-	// This doesn't actually send a signal, just checks if the process exists
-	err = process.Signal(os.Signal(syscall.Signal(0)))
-	return err == nil
-}
-
 // detectEncodingFromLocale detects encoding from locale environment variables.
 func detectEncodingFromLocale() string {
 	for _, key := range []string{"LC_ALL", "LC_CTYPE", "LANG"} {

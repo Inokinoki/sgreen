@@ -198,10 +198,8 @@ func buildEnv(base []string, overrides map[string]string) []string {
 	return out
 }
 
-// setLocalSize resizes the pseudo console.
+// setLocalSize is unreachable on Windows (SetSize routes to
+// conptyResizer); kept for the interface contract.
 func (p *PTYProcess) setLocalSize(rows, cols uint16) error {
-	if p.conptyResizer == nil {
-		return os.ErrInvalid
-	}
-	return p.conptyResizer(rows, cols)
+	return os.ErrInvalid
 }
