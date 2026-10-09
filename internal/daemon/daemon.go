@@ -214,7 +214,7 @@ func Run(initial *pty.PTYProcess, sessionFile, sessionID, socketPath string, ses
 			st.windows = map[int]*winState{}
 			st.mu.Unlock()
 			_ = ln.Close()
-			_ = os.Remove(socketPath)
+			cleanupTransport(socketPath)
 			if err := session.RemoveFile(sessionFile, sessionID); err != nil {
 				logger.Printf("cleanup: remove session file: %v", err)
 			}

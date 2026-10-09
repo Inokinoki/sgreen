@@ -112,9 +112,13 @@ jobs:
     name: GNU Screen Parity
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
     steps:
+      - name: Install modern GNU screen (macOS bundles 4.00.03 from 2006)
+        if: runner.os == 'macOS'
+        run: brew install screen
       - name: Checkout code
         uses: actions/checkout@v4
 
@@ -132,12 +136,18 @@ jobs:
       - name: Run GNU comparison (if screen exists)
         shell: bash
         run: |
-          if ! command -v screen >/dev/null 2>&1; then
+          # Prefer a Homebrew screen over the ancient bundled one.
+          SCREEN="$(command -v screen)"
+          if [[ "$(uname)" == "Darwin" ]] && command -v /opt/homebrew/bin/screen >/dev/null 2>&1; then
+            SCREEN=/opt/homebrew/bin/screen
+          fi
+          if [ -z "$SCREEN" ]; then
             echo "screen not found on this runner; skipping GNU parity comparison."
             exit 0
           fi
+          echo "comparing against: $($SCREEN -v | head -1)"
           chmod +x test/behavior/compare_with_gnu_screen.sh
-          SGREEN_BIN="$PWD/build/sgreen" SCREEN_BIN="$(command -v screen)" test/behavior/compare_with_gnu_screen.sh
+          SGREEN_BIN="$PWD/build/sgreen" SCREEN_BIN="$SCREEN" test/behavior/compare_with_gnu_screen.sh
 
       - name: Assert no behavior diffs
         shell: bash

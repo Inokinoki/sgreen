@@ -1192,7 +1192,13 @@ func tryAttachViaDaemon(sess *session.Session, config *Config) bool {
 	debugAttachClient("socket found, validating daemon")
 
 	if _, err := daemon.QueryStatus(socketPath); err != nil {
-		// Socket exists but daemon is gone: the session is dead.
+		// The session may have ended between the usability check and this
+		// dial (e.g. its program exited immediately). GNU screen exits 0
+		// in that case; only report an error when the session outlives us.
+		if !sessionUsable(sess) {
+			debugAttachClient("session ended before attach: %v", err)
+			os.Exit(0)
+		}
 		_, _ = fmt.Fprintf(os.Stderr, "Error: session %s is not attachable (daemon not responding)\n", sess.ID)
 		os.Exit(1)
 	}
@@ -1204,6 +1210,10 @@ func tryAttachViaDaemon(sess *session.Session, config *Config) bool {
 	if win := sess.GetCurrentWindow(); win != nil {
 		proc, err := ctrl.OpenWindowProcess(win)
 		if err != nil {
+			if !sessionUsable(sess) {
+				debugAttachClient("session ended during attach: %v", err)
+				os.Exit(0)
+			}
 			_, _ = fmt.Fprintf(os.Stderr, "Error: cannot attach to session %s: %v\n", sess.ID, err)
 			os.Exit(1)
 		}

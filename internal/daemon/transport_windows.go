@@ -70,3 +70,9 @@ func dialTransport(sockPath string) (net.Conn, error) {
 func initialPTYFromEnv() (*pty.PTYProcess, error) {
 	return nil, nil
 }
+
+// cleanupTransport removes the endpoint file (the TCP listener closes
+// with the daemon).
+func cleanupTransport(path string) {
+	_ = os.Remove(path)
+}

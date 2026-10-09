@@ -47,6 +47,20 @@ func listenTransport(path string) (net.Listener, string, error) {
 	return ln, "", nil
 }
 
+// cleanupTransport removes the socket at path and, when path is an
+// endpoint file from the sun_path fallback, the real socket it points at.
+func cleanupTransport(path string) {
+	if fi, err := os.Stat(path); err == nil && fi.Mode().IsRegular() {
+		if data, err := os.ReadFile(path); err == nil {
+			fields := strings.Fields(string(data))
+			if len(fields) == 2 && fields[0] == "unix" {
+				_ = os.Remove(fields[1])
+			}
+		}
+	}
+	_ = os.Remove(path)
+}
+
 // dialTransport connects to a session socket: either a real socket at
 // path, or the address recorded in an endpoint file written by the
 // fallback above.
